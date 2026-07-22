@@ -1,39 +1,46 @@
-const db = require("./db");
+const { query } = require("./db");
 
 /**
  * Envoie une notification. Tant qu'aucune passerelle SMS (Africa's Talking, etc.)
  * n'est branchée, on journalise en console + on stocke en base pour affichage in-app.
  * Le jour où la passerelle est prête, seul ce fichier change — le reste de l'app n'a pas à bouger.
  */
-function notify(userId, message, canal = "sms") {
-  db.prepare(
-    `INSERT INTO notifications (user_id, canal, message) VALUES (?, ?, ?)`
-  ).run(userId, canal, message);
+async function notify(userId, message, canal = "sms") {
+  await query(`INSERT INTO notifications (user_id, canal, message) VALUES ($1, $2, $3)`, [userId, canal, message]);
   console.log(`[NOTIF:${canal}] → user#${userId} : ${message}`);
 }
 
-function generateOtp(telephone, contexte = "connexion", contratId = null) {
+async function generateOtp(telephone, contexte = "connexion", contratId = null) {
   const code = String(Math.floor(100000 + Math.random() * 900000));
   const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
-  db.prepare(
-    `INSERT INTO otp_codes (telephone, code, contexte, contrat_id, expires_at) VALUES (?, ?, ?, ?, ?)`
-  ).run(telephone, code, contexte, contratId, expiresAt);
+  await query(
+    `INSERT INTO otp_codes (telephone, code, contexte, contrat_id, expires_at) VALUES ($1, $2, $3, $4, $5)`,
+    [telephone, code, contexte, contratId, expiresAt]
+  );
   console.log(`[OTP] → ${telephone} (${contexte}) : ${code} (valide 5 min)`);
   return code;
 }
 
-function verifyOtp(telephone, code, contexte = "connexion", contratId = null) {
-  const row = db
-    .prepare(
-      `SELECT * FROM otp_codes WHERE telephone = ? AND code = ? AND contexte = ?
-       AND (contrat_id IS ? OR contrat_id = ?) AND consomme = 0
-       ORDER BY id DESC LIMIT 1`
-    )
-    .get(telephone, code, contexte, contratId, contratId);
+async function verifyOtp(telephone, code, contexte = "connexion", contratId = null) {
+  const r = await query(
+    `SELECT * FROM otp_codes WHERE telephone = $1 AND code = $2 AND contexte = $3
+     AND (contrat_id IS NOT DISTINCT FROM $4) AND consomme = FALSE
+     ORDER BY id DESC LIMIT 1`,
+    [telephone, code, contexte, contratId]
+  );
+  const row = r.rows[0];
   if (!row) return { ok: false, reason: "Code invalide." };
   if (new Date(row.expires_at) < new Date()) return { ok: false, reason: "Code expiré." };
-  db.prepare(`UPDATE otp_codes SET consomme = 1 WHERE id = ?`).run(row.id);
+  await query(`UPDATE otp_codes SET consomme = TRUE WHERE id = $1`, [row.id]);
   return { ok: true };
 }
 
-module.exports = { notify, generateOtp, verifyOtp };
+async function getLastOtp(telephone, contexte = "connexion") {
+  const r = await query(
+    `SELECT code FROM otp_codes WHERE telephone = $1 AND contexte = $2 ORDER BY id DESC LIMIT 1`,
+    [telephone, contexte]
+  );
+  return r.rows[0] ? r.rows[0].code : null;
+}
+
+module.exports = { notify, generateOtp, verifyOtp, getLastOtp };

@@ -2,7 +2,7 @@
 set -e
 BASE="http://localhost:3000/api"
 J() { python3 -c "import sys,json; print(json.load(sys.stdin)$1)"; }
-OTP() { node get_otp.js "$1" "$2"; }
+OTP() { curl -s "$BASE/auth/dev/last-otp?telephone=$1&contexte=$2" | J "['code']"; }
 
 echo "── 1. Inscription bailleur ──"
 curl -s -X POST $BASE/auth/register -H "Content-Type: application/json" -d '{

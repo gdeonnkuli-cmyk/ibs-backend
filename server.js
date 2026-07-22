@@ -1,6 +1,7 @@
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
+const { migrate } = require("./db");
 
 const app = express();
 app.use(cors());
@@ -28,8 +29,17 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 3000;
-if (require.main === module) {
+
+async function start() {
+  await migrate();
   app.listen(PORT, () => console.log(`IBS API en écoute sur http://localhost:${PORT}`));
+}
+
+if (require.main === module) {
+  start().catch((e) => {
+    console.error("Échec du démarrage :", e);
+    process.exit(1);
+  });
 }
 
 module.exports = app;
