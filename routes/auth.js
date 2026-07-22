@@ -123,4 +123,19 @@ function publicUser(user) {
   return safe;
 }
 
+// ── MODE TEST — à retirer dès qu'une vraie passerelle SMS est branchée ──
+// Permet de voir le code OTP depuis l'app tant que les SMS ne partent pas réellement.
+// Désactivable en mettant DEV_MODE=false dans les variables d'environnement.
+router.get("/dev/last-otp", (req, res) => {
+  if (process.env.DEV_MODE === "false") return res.status(404).json({ error: "Mode test désactivé." });
+  const { telephone, contexte } = req.query;
+  if (!telephone) return res.status(400).json({ error: "Téléphone requis." });
+  const row = db
+    .prepare(
+      `SELECT code FROM otp_codes WHERE telephone = ? AND contexte = ? ORDER BY id DESC LIMIT 1`
+    )
+    .get(telephone, contexte || "connexion");
+  res.json({ code: row ? row.code : null });
+});
+
 module.exports = router;
