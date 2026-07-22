@@ -1,0 +1,5 @@
+node_modules/
+ibs.db
+server.log
+full_test_output.log
+.env
