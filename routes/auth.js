@@ -10,10 +10,10 @@ const router = express.Router();
 // ── Inscription ──────────────────────────────────────
 router.post("/register", async (req, res) => {
   try {
-    const { role, nom, telephone, password, commune, cni_recto_url, cni_verso_url } = req.body;
+    const { role, nom, telephone, password, commune, cni_recto_url, cni_verso_url, agrement_ou_rccm, nom_agence } = req.body;
 
-    if (!role || !["bailleur", "locataire"].includes(role)) {
-      return res.status(400).json({ error: "Rôle invalide (bailleur ou locataire)." });
+    if (!role || !["bailleur", "locataire", "intermediaire"].includes(role)) {
+      return res.status(400).json({ error: "Rôle invalide (bailleur, locataire ou intermédiaire/agence)." });
     }
     if (!nom || !telephone || !password) {
       return res.status(400).json({ error: "Nom, téléphone et mot de passe sont requis." });
@@ -21,15 +21,19 @@ router.post("/register", async (req, res) => {
     if (!cni_recto_url || !cni_verso_url) {
       return res.status(400).json({ error: "La CNI (recto et verso) est obligatoire pour s'inscrire sur IBS." });
     }
+    if (role === "intermediaire" && !agrement_ou_rccm) {
+      return res.status(400).json({ error: "Le numéro d'agrément ou de RCCM est obligatoire pour un compte Intermédiaire/Agence." });
+    }
 
     const existing = await query(`SELECT id FROM users WHERE telephone = $1`, [telephone]);
     if (existing.rows.length) return res.status(409).json({ error: "Ce numéro de téléphone est déjà utilisé." });
 
     const password_hash = bcrypt.hashSync(password, 10);
     const inserted = await query(
-      `INSERT INTO users (role, nom, telephone, password_hash, commune, cni_recto_url, cni_verso_url)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-      [role, nom, telephone, password_hash, commune || null, cni_recto_url, cni_verso_url]
+      `INSERT INTO users (role, nom, telephone, password_hash, commune, cni_recto_url, cni_verso_url, agrement_ou_rccm, nom_agence)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+      [role, nom, telephone, password_hash, commune || null, cni_recto_url, cni_verso_url,
+       role === "intermediaire" ? agrement_ou_rccm : null, role === "intermediaire" ? (nom_agence || null) : null]
     );
     const userId = inserted.rows[0].id;
 
