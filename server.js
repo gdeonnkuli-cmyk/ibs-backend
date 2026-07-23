@@ -20,6 +20,7 @@ app.use("/api/auth", require("./routes/auth"));
 app.use("/api/offres", require("./routes/offres"));
 app.use("/api/demandes", require("./routes/demandes"));
 app.use("/api/contrats", require("./routes/contrats"));
+app.use("/api/notifications", require("./routes/notifications"));
 app.use("/api/admin/stats", require("./routes/stats"));
 
 app.use((req, res) => res.status(404).json({ error: "Route introuvable." }));
