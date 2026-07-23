@@ -1,7 +1,9 @@
 const express = require("express");
 const crypto = require("crypto");
+const jwt = require("jsonwebtoken");
+const PDFDocument = require("pdfkit");
 const { query } = require("../db");
-const { requireAuth } = require("../auth");
+const { requireAuth, JWT_SECRET } = require("../auth");
 const { notify, generateOtp, verifyOtp } = require("../notify");
 const { auditLog } = require("../audit");
 
@@ -185,6 +187,87 @@ router.post("/:id/signer", requireAuth, async (req, res) => {
 
     res.json({ message: "Votre signature est enregistrée. En attente de la seconde partie." });
   } catch (e) { console.error(e); res.status(500).json({ error: "Erreur serveur." }); }
+});
+
+// ── PDF du contrat signé (accessible via lien direct : ?token=... ou header Authorization) ──
+router.get("/:id/pdf", async (req, res) => {
+  try {
+    const header = req.headers.authorization || "";
+    const token = header.startsWith("Bearer ") ? header.slice(7) : req.query.token;
+    if (!token) return res.status(401).json({ error: "Authentification requise." });
+    let user;
+    try { user = jwt.verify(token, JWT_SECRET); }
+    catch { return res.status(401).json({ error: "Session invalide ou expirée." }); }
+
+    const contrat = await getContrat(req.params.id);
+    if (!contrat) return res.status(404).json({ error: "Contrat introuvable." });
+    if (contrat.bailleur_id !== user.id && contrat.locataire_id !== user.id) {
+      return res.status(403).json({ error: "Ce contrat ne vous concerne pas." });
+    }
+    if (contrat.statut !== "signe") return res.status(400).json({ error: "Ce contrat n'est pas encore signé." });
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="bail-${contrat.reference_signature}.pdf"`);
+
+    const doc = new PDFDocument({ size: "A4", margin: 56 });
+    doc.pipe(res);
+
+    const NAVY = "#0D1B3E", GOLD = "#C9963A", MUTED = "#5B6072";
+
+    doc.rect(0, 0, doc.page.width, 90).fill(NAVY);
+    doc.fillColor(GOLD).fontSize(22).font("Helvetica-Bold").text("IBS", 56, 28);
+    doc.fillColor("#FFFFFF").fontSize(11).font("Helvetica").text("Immo-Bail Solution — Contrat de bail", 56, 55);
+
+    doc.moveDown(3);
+    doc.fillColor(NAVY).fontSize(16).font("Helvetica-Bold").text("Contrat de bail à usage d'habitation", { align: "left" });
+    doc.fillColor(MUTED).fontSize(9).font("Helvetica").text(`Référence de signature : ${contrat.reference_signature}`);
+    doc.moveDown(1.2);
+
+    function row(label, value) {
+      doc.fillColor(MUTED).fontSize(9).font("Helvetica").text(label, { continued: false });
+      doc.fillColor(NAVY).fontSize(11).font("Helvetica-Bold").text(value || "—");
+      doc.moveDown(0.6);
+    }
+
+    doc.fillColor(NAVY).fontSize(12).font("Helvetica-Bold").text("Parties");
+    doc.moveDown(0.3);
+    row("Bailleur", `${contrat.bailleur_nom} — ${contrat.bailleur_telephone}`);
+    row("Locataire", `${contrat.locataire_nom} — ${contrat.locataire_telephone}`);
+
+    doc.moveDown(0.5);
+    doc.fillColor(NAVY).fontSize(12).font("Helvetica-Bold").text("Bien loué");
+    doc.moveDown(0.3);
+    row("Désignation", contrat.titre);
+    row("Adresse", contrat.adresse || contrat.commune);
+    row("Commune", contrat.commune);
+
+    doc.moveDown(0.5);
+    doc.fillColor(NAVY).fontSize(12).font("Helvetica-Bold").text("Conditions financières");
+    doc.moveDown(0.3);
+    row("Loyer mensuel", `${contrat.loyer_usd} USD`);
+    row("Durée du bail", `${contrat.duree_mois} mois`);
+    row("Commission IBS (50% d'un mois, à la signature)", `${contrat.commission_usd} USD`);
+    row("Réception des loyers", contrat.reception_loyer);
+
+    doc.moveDown(0.5);
+    doc.fillColor(NAVY).fontSize(12).font("Helvetica-Bold").text("Signature électronique");
+    doc.moveDown(0.3);
+    row("Signé le", new Date(contrat.signed_at).toLocaleString("fr-FR"));
+    row("Référence", contrat.reference_signature);
+    doc.fillColor(MUTED).fontSize(7.5).font("Helvetica").text(`Empreinte SHA-256 du document : ${contrat.contenu_hash}`, { width: 480 });
+
+    doc.moveDown(2);
+    doc.fillColor(MUTED).fontSize(8).font("Helvetica-Oblique").text(
+      "Ce document a été généré et signé électroniquement via la plateforme IBS — Immo-Bail Solution. " +
+      "Le paiement du loyer et la commission se règlent hors plateforme durant cette phase pilote (V0).",
+      { width: 480 }
+    );
+
+    doc.end();
+  } catch (e) {
+    console.error(e);
+    if (!res.headersSent) res.status(500).json({ error: "Erreur serveur." });
+  }
 });
 
 module.exports = router;
