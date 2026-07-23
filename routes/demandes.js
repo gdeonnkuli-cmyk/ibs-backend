@@ -40,7 +40,7 @@ router.post("/", requireAuth, requireRole("locataire"), async (req, res) => {
 });
 
 // ── Bailleur : candidatures reçues sur ses offres ────
-router.get("/recues", requireAuth, requireRole("bailleur"), async (req, res) => {
+router.get("/recues", requireAuth, requireRole("bailleur","intermediaire"), async (req, res) => {
   try {
     const r = await query(
       `SELECT d.id AS demande_id, d.statut, d.message, d.created_at,
@@ -75,7 +75,7 @@ router.get("/mine", requireAuth, requireRole("locataire"), async (req, res) => {
 });
 
 // ── Bailleur sélectionne un candidat → crée le contrat (brouillon) ──
-router.post("/:id/selectionner", requireAuth, requireRole("bailleur"), async (req, res) => {
+router.post("/:id/selectionner", requireAuth, requireRole("bailleur","intermediaire"), async (req, res) => {
   try {
     const dr = await query(
       `SELECT d.*, o.id AS offre_id, p.bailleur_id, p.loyer_usd, p.titre
