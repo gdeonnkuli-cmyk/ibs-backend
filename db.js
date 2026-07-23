@@ -1,4 +1,4 @@
-// db.js — Connexion + schéma PostgreSQL (V0 IBS)
+ // db.js — Connexion + schéma PostgreSQL (V0 IBS)
 // Utilise DATABASE_URL, injectée automatiquement par Railway quand un plugin
 // PostgreSQL est ajouté au projet. En local, définissez DATABASE_URL dans .env.
 const { Pool } = require("pg");
@@ -123,6 +123,38 @@ async function migrate() {
     );
   `);
   console.log("✅ Schéma PostgreSQL prêt.");
+  await ensureAdmin();
+}
+
+// Crée automatiquement le compte admin au démarrage s'il n'existe pas encore.
+// Évite d'avoir à lancer une commande manuelle (impossible sans accès shell en production).
+async function ensureAdmin() {
+  const bcrypt = require("bcryptjs");
+  const existingAdmin = await pool.query(`SELECT id FROM users WHERE role = 'admin' LIMIT 1`);
+  if (existingAdmin.rows.length) {
+    console.log("✅ Compte admin déjà présent.");
+    return;
+  }
+
+  const telephone = process.env.ADMIN_PHONE || "+243800000000";
+  const password = process.env.ADMIN_PASSWORD || "admin123";
+
+  const conflict = await pool.query(`SELECT id, role FROM users WHERE telephone = $1`, [telephone]);
+  if (conflict.rows.length) {
+    console.warn(
+      `⚠️  ADMIN_PHONE (${telephone}) est déjà utilisé par un compte ${conflict.rows[0].role} existant. ` +
+      `Changez la variable ADMIN_PHONE sur Railway pour un numéro non utilisé, puis redéployez.`
+    );
+    return;
+  }
+
+  const hash = bcrypt.hashSync(password, 10);
+  await pool.query(
+    `INSERT INTO users (role, nom, telephone, password_hash, cni_statut, telephone_verifie)
+     VALUES ('admin', 'Admin IBS', $1, $2, 'verifie', TRUE)`,
+    [telephone, hash]
+  );
+  console.log("✅ Compte admin créé automatiquement :", telephone);
 }
 
 module.exports = { pool, query, migrate };
