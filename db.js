@@ -1,4 +1,4 @@
- // db.js — Connexion + schéma PostgreSQL (V0 IBS)
+// db.js — Connexion + schéma PostgreSQL (V0 IBS)
 // Utilise DATABASE_URL, injectée automatiquement par Railway quand un plugin
 // PostgreSQL est ajouté au projet. En local, définissez DATABASE_URL dans .env.
 const { Pool } = require("pg");
@@ -123,6 +123,16 @@ async function migrate() {
     );
   `);
   console.log("✅ Schéma PostgreSQL prêt.");
+
+  // ── Migration : ouverture du rôle Intermédiaire / Agence ──
+  await pool.query(`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS agrement_ou_rccm TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS nom_agence TEXT;
+    ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
+    ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('bailleur','locataire','admin','intermediaire'));
+  `);
+  console.log("✅ Rôle Intermédiaire / Agence disponible.");
+
   await ensureAdmin();
 }
 
