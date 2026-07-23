@@ -1,13 +1,60 @@
 const { query } = require("./db");
 
 /**
- * Envoie une notification. Tant qu'aucune passerelle SMS (Africa's Talking, etc.)
- * n'est branchée, on journalise en console + on stocke en base pour affichage in-app.
- * Le jour où la passerelle est prête, seul ce fichier change — le reste de l'app n'a pas à bouger.
+ * Envoi SMS réel via l'API Africa's Talking (appel direct, sans SDK, via fetch natif —
+ * évite les dépendances vulnérables du SDK officiel). Si AT_API_KEY / AT_USERNAME ne
+ * sont pas configurées, on repasse automatiquement en mode simulé (log console).
+ */
+const AT_USERNAME = process.env.AT_USERNAME;
+const AT_API_KEY = process.env.AT_API_KEY;
+const AT_SENDER_ID = process.env.AT_SENDER_ID || "";
+const AT_SANDBOX = process.env.AT_SANDBOX === "true";
+const AT_BASE_URL = AT_SANDBOX
+  ? "https://api.sandbox.africastalking.com/version1/messaging"
+  : "https://api.africastalking.com/version1/messaging";
+
+async function sendSms(telephone, message) {
+  if (!AT_API_KEY || !AT_USERNAME) {
+    console.log(`[SMS-SIMULÉ · pas de passerelle configurée] → ${telephone} : ${message}`);
+    return;
+  }
+  try {
+    const body = new URLSearchParams({ username: AT_USERNAME, to: telephone, message });
+    if (AT_SENDER_ID) body.set("from", AT_SENDER_ID);
+
+    const res = await fetch(AT_BASE_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Accept: "application/json",
+        apiKey: AT_API_KEY,
+      },
+      body: body.toString(),
+    });
+    const data = await res.json().catch(() => null);
+    const status = data?.SMSMessageData?.Recipients?.[0]?.status;
+    if (!res.ok || (status && status !== "Success")) {
+      console.error("[SMS] Échec envoi Africa's Talking :", telephone, JSON.stringify(data));
+    } else {
+      console.log(`[SMS envoyé] → ${telephone}`);
+    }
+  } catch (e) {
+    console.error("[SMS] Erreur réseau Africa's Talking :", e.message);
+  }
+}
+
+/**
+ * Envoie une notification. Le SMS part réellement si la passerelle est configurée ;
+ * dans tous les cas, la notification est aussi stockée en base pour affichage in-app.
  */
 async function notify(userId, message, canal = "sms") {
   await query(`INSERT INTO notifications (user_id, canal, message) VALUES ($1, $2, $3)`, [userId, canal, message]);
-  console.log(`[NOTIF:${canal}] → user#${userId} : ${message}`);
+  if (canal === "sms") {
+    const u = await query(`SELECT telephone FROM users WHERE id = $1`, [userId]);
+    if (u.rows[0]) await sendSms(u.rows[0].telephone, message);
+  } else {
+    console.log(`[NOTIF:${canal}] → user#${userId} : ${message}`);
+  }
 }
 
 async function generateOtp(telephone, contexte = "connexion", contratId = null) {
@@ -17,6 +64,8 @@ async function generateOtp(telephone, contexte = "connexion", contratId = null) 
     `INSERT INTO otp_codes (telephone, code, contexte, contrat_id, expires_at) VALUES ($1, $2, $3, $4, $5)`,
     [telephone, code, contexte, contratId, expiresAt]
   );
+  const label = contexte === "signature" ? "Code de signature IBS" : "Code de vérification IBS";
+  await sendSms(telephone, `${label} : ${code} (valide 5 minutes)`);
   console.log(`[OTP] → ${telephone} (${contexte}) : ${code} (valide 5 min)`);
   return code;
 }
