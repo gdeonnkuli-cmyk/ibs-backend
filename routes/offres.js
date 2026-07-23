@@ -6,7 +6,7 @@ const { auditLog } = require("../audit");
 const router = express.Router();
 
 // ── Publier une offre (bailleur, identité vérifiée requise) ──
-router.post("/", requireAuth, requireRole("bailleur"), async (req, res) => {
+router.post("/", requireAuth, requireRole("bailleur","intermediaire"), async (req, res) => {
   try {
     const ur = await query(`SELECT * FROM users WHERE id = $1`, [req.user.id]);
     const user = ur.rows[0];
@@ -83,7 +83,7 @@ router.get("/:id", async (req, res) => {
 });
 
 // ── Mes offres (bailleur) ────────────────────────────
-router.get("/mine/liste", requireAuth, requireRole("bailleur"), async (req, res) => {
+router.get("/mine/liste", requireAuth, requireRole("bailleur","intermediaire"), async (req, res) => {
   try {
     const r = await query(
       `SELECT o.id AS offre_id, o.statut, o.vues, p.titre, p.commune, p.loyer_usd, p.statut_verification
@@ -114,6 +114,47 @@ router.post("/admin/verify-propriete/:id", requireAuth, requireRole("admin"), as
     await query(`UPDATE proprietes SET statut_verification = $1 WHERE id = $2`, [decision, req.params.id]);
     await auditLog(req.user.id, "propriete_review", { propriete_id: req.params.id, decision });
     res.json({ message: "Décision enregistrée." });
+  } catch (e) { console.error(e); res.status(500).json({ error: "Erreur serveur." }); }
+});
+
+// ── Bailleur : modifier une offre ────────────────────
+router.patch("/:id", requireAuth, requireRole("bailleur","intermediaire"), async (req, res) => {
+  try {
+    const check = await query(
+      `SELECT p.id, p.bailleur_id FROM offres o JOIN proprietes p ON p.id = o.propriete_id WHERE o.id = $1`,
+      [req.params.id]
+    );
+    if (!check.rows.length) return res.status(404).json({ error: "Offre introuvable." });
+    if (check.rows[0].bailleur_id !== req.user.id) return res.status(403).json({ error: "Cette offre ne vous appartient pas." });
+
+    const { titre, commune, adresse, chambres, loyer_usd, description } = req.body;
+    await query(
+      `UPDATE proprietes SET titre = $1, commune = $2, adresse = $3, chambres = $4, loyer_usd = $5, description = $6
+       WHERE id = $7`,
+      [titre, commune, adresse || null, chambres || 1, loyer_usd, description || null, check.rows[0].id]
+    );
+    await auditLog(req.user.id, "offre_modifiee", { offre_id: req.params.id });
+    res.json({ message: "Offre mise à jour." });
+  } catch (e) { console.error(e); res.status(500).json({ error: "Erreur serveur." }); }
+});
+
+// ── Bailleur : suspendre / réactiver une offre ───────
+router.post("/:id/statut", requireAuth, requireRole("bailleur","intermediaire"), async (req, res) => {
+  try {
+    const { statut } = req.body;
+    if (!["active", "suspendue"].includes(statut)) return res.status(400).json({ error: "Statut invalide." });
+
+    const check = await query(
+      `SELECT o.id, o.statut, p.bailleur_id FROM offres o JOIN proprietes p ON p.id = o.propriete_id WHERE o.id = $1`,
+      [req.params.id]
+    );
+    if (!check.rows.length) return res.status(404).json({ error: "Offre introuvable." });
+    if (check.rows[0].bailleur_id !== req.user.id) return res.status(403).json({ error: "Cette offre ne vous appartient pas." });
+    if (check.rows[0].statut === "louee") return res.status(400).json({ error: "Ce bien est déjà loué — impossible de changer son statut." });
+
+    await query(`UPDATE offres SET statut = $1 WHERE id = $2`, [statut, req.params.id]);
+    await auditLog(req.user.id, "offre_statut", { offre_id: req.params.id, statut });
+    res.json({ message: statut === "active" ? "Offre réactivée." : "Offre suspendue." });
   } catch (e) { console.error(e); res.status(500).json({ error: "Erreur serveur." }); }
 });
 
