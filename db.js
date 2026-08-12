@@ -133,6 +133,19 @@ async function migrate() {
   `);
   console.log("✅ Rôle Intermédiaire / Agence disponible.");
 
+  // ── Migration : caractéristiques enrichies de l'offre ──
+  // (garantie en mois, charges incluses ou non, équipements cochés, disponibilité)
+  await pool.query(`
+    ALTER TABLE proprietes ADD COLUMN IF NOT EXISTS garantie_mois INTEGER;
+    ALTER TABLE proprietes ADD COLUMN IF NOT EXISTS charges_incluses BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE proprietes ADD COLUMN IF NOT EXISTS equipements TEXT[] NOT NULL DEFAULT '{}';
+    ALTER TABLE proprietes ADD COLUMN IF NOT EXISTS disponibilite TEXT NOT NULL DEFAULT 'immediat';
+    ALTER TABLE proprietes DROP CONSTRAINT IF EXISTS proprietes_disponibilite_check;
+    ALTER TABLE proprietes ADD CONSTRAINT proprietes_disponibilite_check
+      CHECK (disponibilite IN ('immediat','sous_7j','sous_30j'));
+  `);
+  console.log("✅ Champs offre enrichis (garantie, charges, équipements, disponibilité) disponibles.");
+
   await ensureAdmin();
 }
 
