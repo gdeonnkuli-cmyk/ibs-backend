@@ -2,6 +2,7 @@ const express = require("express");
 const { query } = require("../db");
 const { requireAuth, requireRole } = require("../auth");
 const { auditLog } = require("../audit");
+const { statsBailleur } = require("./abonnements");
 
 const router = express.Router();
 
@@ -43,7 +44,7 @@ router.post("/", requireAuth, requireRole("bailleur","intermediaire"), async (re
 // ── Recherche / liste des offres (public) ────────────
 router.get("/", async (req, res) => {
   try {
-    const { commune, budget_max, type, chambres } = req.query;
+    const { commune, budget_max, type, chambres, equipements, garantie_max, charges_incluses, disponibilite } = req.query;
     let sql = `
       SELECT o.id AS offre_id, o.statut, o.vues, o.created_at,
              p.titre, p.type, p.commune, p.adresse, p.chambres, p.loyer_usd, p.description,
@@ -59,6 +60,14 @@ router.get("/", async (req, res) => {
     if (type) { params.push(type); sql += ` AND p.type = $${params.length}`; }
     if (budget_max) { params.push(Number(budget_max)); sql += ` AND p.loyer_usd <= $${params.length}`; }
     if (chambres) { params.push(Number(chambres)); sql += ` AND p.chambres >= $${params.length}`; }
+    if (garantie_max) { params.push(Number(garantie_max)); sql += ` AND (p.garantie_mois IS NULL OR p.garantie_mois <= $${params.length})`; }
+    if (charges_incluses === "true") { sql += ` AND p.charges_incluses = TRUE`; }
+    if (disponibilite) { params.push(disponibilite); sql += ` AND p.disponibilite = $${params.length}`; }
+    if (equipements) {
+      // équipements = liste de codes séparés par virgule ; l'offre doit posséder TOUS les codes demandés
+      const codes = equipements.split(",").map(s => s.trim()).filter(Boolean);
+      if (codes.length) { params.push(codes); sql += ` AND p.equipements @> $${params.length}::text[]`; }
+    }
     sql += ` ORDER BY o.created_at DESC`;
 
     const r = await query(sql, params);
@@ -71,7 +80,8 @@ router.get("/:id", async (req, res) => {
   try {
     const r = await query(
       `SELECT o.id AS offre_id, o.statut, o.vues, o.created_at,
-              p.*, u.nom AS bailleur_nom, u.telephone AS bailleur_telephone
+              p.*, u.nom AS bailleur_nom, u.telephone AS bailleur_telephone,
+              (SELECT COUNT(*) FROM abonnements ab WHERE ab.bailleur_id = p.bailleur_id) AS abonnes_count
        FROM offres o
        JOIN proprietes p ON p.id = o.propriete_id
        JOIN users u ON u.id = p.bailleur_id
@@ -80,6 +90,11 @@ router.get("/:id", async (req, res) => {
     );
     const offre = r.rows[0];
     if (!offre) return res.status(404).json({ error: "Offre introuvable." });
+
+    const stats = await statsBailleur(offre.bailleur_id);
+    offre.tier = stats.tier;
+    offre.offres_verifiees = stats.offres_verifiees;
+    offre.baux_signes = stats.baux_signes;
 
     await query(`UPDATE offres SET vues = vues + 1 WHERE id = $1`, [req.params.id]);
     res.json({ offre });
