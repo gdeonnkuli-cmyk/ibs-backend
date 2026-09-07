@@ -188,6 +188,20 @@ async function migrate() {
   `);
   console.log("✅ Table avis prête.");
 
+  // ── Migration : messagerie interne locataire ↔ bailleur, par offre ──
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS messages (
+      id SERIAL PRIMARY KEY,
+      offre_id INTEGER NOT NULL REFERENCES offres(id),
+      locataire_id INTEGER NOT NULL REFERENCES users(id),
+      expediteur_id INTEGER NOT NULL REFERENCES users(id),
+      contenu TEXT NOT NULL,
+      lu BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+  console.log("✅ Table messages prête.");
+
   await ensureAdmin();
 }
 
