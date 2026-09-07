@@ -14,6 +14,7 @@ API du périmètre V0 défini dans *IBS_Spec_V0_Publique.docx* : comptes vérifi
 ## Installation
 
 ```bash
+
 npm install
 cp .env.example .env   # renseigner DATABASE_URL (fourni automatiquement par Railway si le plugin PostgreSQL est ajouté)
 npm run seed            # crée les tables + le compte admin
