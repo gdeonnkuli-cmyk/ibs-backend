@@ -117,7 +117,7 @@ router.get("/mine", requireAuth, requireRole("locataire"), async (req, res) => {
        LEFT JOIN proprietes p ON p.bailleur_id = u.id
        LEFT JOIN offres o ON o.propriete_id = p.id
        WHERE a.locataire_id = $1
-       GROUP BY u.id, u.nom, u.role
+       GROUP BY u.id, u.nom, u.role, a.created_at
        ORDER BY a.created_at DESC`,
       [req.user.id]
     );
