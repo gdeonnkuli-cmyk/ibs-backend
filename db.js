@@ -202,6 +202,21 @@ async function migrate() {
   `);
   console.log("✅ Table messages prête.");
 
+  // ── Migration : alertes de recherche (SP8) — notifie le locataire à la publication d'une offre correspondante ──
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS alertes (
+      id SERIAL PRIMARY KEY,
+      locataire_id INTEGER NOT NULL REFERENCES users(id),
+      commune TEXT,
+      type TEXT,
+      budget_max REAL,
+      chambres INTEGER,
+      actif BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+  console.log("✅ Table alertes prête.");
+
   await ensureAdmin();
 }
 
