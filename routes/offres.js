@@ -2,7 +2,7 @@ const express = require("express");
 const { query } = require("../db");
 const { requireAuth, requireRole } = require("../auth");
 const { auditLog } = require("../audit");
-const { statsBailleur } = require("./abonnements");
+const { statsBailleur, computeConfiance } = require("./abonnements");
 const { notify } = require("../notify");
 
 const router = express.Router();
@@ -17,7 +17,7 @@ router.post("/", requireAuth, requireRole("bailleur","intermediaire"), async (re
     }
 
     const { titre, type, commune, adresse, chambres, loyer_usd, description, titre_propriete_url,
-            garantie_mois, charges_incluses, equipements, disponibilite } = req.body;
+            garantie_mois, charges_incluses, equipements, disponibilite, photos } = req.body;
     if (!titre || !type || !commune || !loyer_usd) {
       return res.status(400).json({ error: "Titre, type, commune et loyer sont requis." });
     }
@@ -25,10 +25,11 @@ router.post("/", requireAuth, requireRole("bailleur","intermediaire"), async (re
 
     const p = await query(
       `INSERT INTO proprietes (bailleur_id, titre, type, commune, adresse, chambres, loyer_usd, description, titre_propriete_url,
-                                garantie_mois, charges_incluses, equipements, disponibilite)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
+                                garantie_mois, charges_incluses, equipements, disponibilite, photos)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id`,
       [user.id, titre, type, commune, adresse || null, chambres || 1, loyer_usd, description || null, titre_propriete_url || null,
-       garantie_mois ? Number(garantie_mois) : null, !!charges_incluses, Array.isArray(equipements) ? equipements : [], dispoOk]
+       garantie_mois ? Number(garantie_mois) : null, !!charges_incluses, Array.isArray(equipements) ? equipements : [], dispoOk,
+       Array.isArray(photos) ? photos.slice(0, 8) : []]
     );
 
     const o = await query(`INSERT INTO offres (propriete_id) VALUES ($1) RETURNING id`, [p.rows[0].id]);
@@ -65,7 +66,7 @@ router.get("/", async (req, res) => {
     let sql = `
       SELECT o.id AS offre_id, o.statut, o.vues, o.created_at,
              p.titre, p.type, p.commune, p.adresse, p.chambres, p.loyer_usd, p.description,
-             p.statut_verification, p.garantie_mois, p.charges_incluses, p.equipements, p.disponibilite,
+             p.statut_verification, p.garantie_mois, p.charges_incluses, p.equipements, p.disponibilite, p.photos,
              u.nom AS bailleur_nom
       FROM offres o
       JOIN proprietes p ON p.id = o.propriete_id
@@ -114,6 +115,7 @@ router.get("/:id", async (req, res) => {
     offre.baux_signes = stats.baux_signes;
     offre.note_moyenne = stats.note_moyenne;
     offre.avis_count = stats.avis_count;
+    offre.confiance = computeConfiance(offre.statut_verification, stats.tier, stats.note_moyenne);
 
     await query(`UPDATE offres SET vues = vues + 1 WHERE id = $1`, [req.params.id]);
     res.json({ offre });
@@ -167,15 +169,15 @@ router.patch("/:id", requireAuth, requireRole("bailleur","intermediaire"), async
     if (check.rows[0].bailleur_id !== req.user.id) return res.status(403).json({ error: "Cette offre ne vous appartient pas." });
 
     const { titre, commune, adresse, chambres, loyer_usd, description,
-            garantie_mois, charges_incluses, equipements, disponibilite } = req.body;
+            garantie_mois, charges_incluses, equipements, disponibilite, photos } = req.body;
     const dispoOk = ["immediat", "sous_7j", "sous_30j"].includes(disponibilite) ? disponibilite : "immediat";
     await query(
       `UPDATE proprietes SET titre = $1, commune = $2, adresse = $3, chambres = $4, loyer_usd = $5, description = $6,
-              garantie_mois = $7, charges_incluses = $8, equipements = $9, disponibilite = $10
-       WHERE id = $11`,
+              garantie_mois = $7, charges_incluses = $8, equipements = $9, disponibilite = $10, photos = $11
+       WHERE id = $12`,
       [titre, commune, adresse || null, chambres || 1, loyer_usd, description || null,
        garantie_mois ? Number(garantie_mois) : null, !!charges_incluses, Array.isArray(equipements) ? equipements : [], dispoOk,
-       check.rows[0].id]
+       Array.isArray(photos) ? photos.slice(0, 8) : [], check.rows[0].id]
     );
     await auditLog(req.user.id, "offre_modifiee", { offre_id: req.params.id });
     res.json({ message: "Offre mise à jour." });
