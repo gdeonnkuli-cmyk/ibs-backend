@@ -282,6 +282,12 @@ async function migrate() {
   `);
   console.log("✅ Table avis_quartier prête.");
 
+  // ── Migration : galerie de photos par offre (URLs hébergées, ex. Cloudinary) ──
+  await pool.query(`
+    ALTER TABLE proprietes ADD COLUMN IF NOT EXISTS photos TEXT[] NOT NULL DEFAULT '{}';
+  `);
+  console.log("✅ Champ photos disponible sur les offres.");
+
   await ensureAdmin();
 }
 
