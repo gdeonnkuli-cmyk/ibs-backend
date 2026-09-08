@@ -217,6 +217,32 @@ async function migrate() {
   `);
   console.log("✅ Table alertes prête.");
 
+  // ── Migration : favoris (locataire sauvegarde une offre) ──
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS favoris (
+      id SERIAL PRIMARY KEY,
+      locataire_id INTEGER NOT NULL REFERENCES users(id),
+      offre_id INTEGER NOT NULL REFERENCES offres(id),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(locataire_id, offre_id)
+    );
+  `);
+  console.log("✅ Table favoris prête.");
+
+  // ── Migration : profil locataire enrichi (accompagne automatiquement chaque candidature) ──
+  await pool.query(`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS profession TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS revenu_usd REAL;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS nb_occupants INTEGER;
+  `);
+  console.log("✅ Profil locataire enrichi (profession, revenu, occupants) disponible.");
+
+  // ── Migration : rappel de fin de bail (anti-spam : un rappel max tous les 7 jours) ──
+  await pool.query(`
+    ALTER TABLE contrats ADD COLUMN IF NOT EXISTS dernier_rappel_echeance TIMESTAMPTZ;
+  `);
+  console.log("✅ Champ rappel de fin de bail disponible sur les contrats.");
+
   await ensureAdmin();
 }
 
