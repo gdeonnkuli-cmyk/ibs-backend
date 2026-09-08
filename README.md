@@ -4,7 +4,7 @@ API du périmètre V0 défini dans *IBS_Spec_V0_Publique.docx* : comptes vérifi
 
 ## Stack
 
-- **Node.js + Express** (au lieu de Laravel — voir note ci-dessous)
+- **Node.js + Express** (au lieu de Laravel — voir note ci-dessous) 
 - **PostgreSQL** via le driver `pg` — base persistante, indépendante du conteneur applicatif
 - **JWT** pour les sessions, **bcrypt** pour les mots de passe
 - OTP SMS **simulé** : les codes sont écrits dans la console et dans la table `notifications` tant qu'aucune passerelle SMS (Africa's Talking, etc.) n'est branchée — voir `notify.js`. Un endpoint temporaire `GET /api/auth/dev/last-otp?telephone=&contexte=` permet de récupérer le dernier code depuis l'app pendant les tests (désactivable avec `DEV_MODE=false`).
