@@ -63,10 +63,12 @@ router.get("/recues", requireAuth, requireRole("bailleur","intermediaire"), asyn
 router.get("/mine", requireAuth, requireRole("locataire"), async (req, res) => {
   try {
     const r = await query(
-      `SELECT d.id AS demande_id, d.statut, d.created_at, p.titre, p.commune, p.loyer_usd
+      `SELECT d.id AS demande_id, d.statut, d.created_at, p.titre, p.commune, p.loyer_usd,
+              c.id AS contrat_id, c.statut AS contrat_statut
        FROM demandes d
        JOIN offres o ON o.id = d.offre_id
        JOIN proprietes p ON p.id = o.propriete_id
+       LEFT JOIN contrats c ON c.offre_id = d.offre_id AND c.locataire_id = d.locataire_id
        WHERE d.locataire_id = $1
        ORDER BY d.created_at DESC`,
       [req.user.id]
