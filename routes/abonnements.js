@@ -37,6 +37,20 @@ async function statsBailleur(bailleurId) {
   };
 }
 
+// ── Badge de confiance unique : condense vérification + palier + note en un seul signal ──
+function computeConfiance(statutVerificationOffre, tier, noteMoyenne) {
+  if (statutVerificationOffre !== "verifie") return { code: "nouveau", label: "Vérification en cours", icon: "🆕" };
+  let score = 1; // vérifié = base
+  if (tier.code === "confirme") score += 1;
+  else if (tier.code === "reference") score += 2;
+  else if (tier.code === "elite") score += 3;
+  if (noteMoyenne !== null) score += noteMoyenne >= 4 ? 2 : noteMoyenne >= 3 ? 1 : 0;
+
+  if (score >= 5) return { code: "excellent", label: "Excellent", icon: "💎" };
+  if (score >= 3) return { code: "tres_fiable", label: "Très fiable", icon: "🏆" };
+  return { code: "fiable", label: "Fiable", icon: "✓" };
+}
+
 // ── S'abonner à un bailleur / agence (locataire) ──
 router.post("/", requireAuth, requireRole("locataire"), async (req, res) => {
   try {
@@ -148,3 +162,4 @@ router.get("/fil", requireAuth, requireRole("locataire"), async (req, res) => {
 module.exports = router;
 module.exports.TIERS = TIERS;
 module.exports.statsBailleur = statsBailleur;
+module.exports.computeConfiance = computeConfiance;
