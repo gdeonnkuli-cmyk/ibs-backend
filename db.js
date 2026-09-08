@@ -243,6 +243,45 @@ async function migrate() {
   `);
   console.log("✅ Champ rappel de fin de bail disponible sur les contrats.");
 
+  // ── Migration : signalement d'une annonce suspecte ──
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS signalements (
+      id SERIAL PRIMARY KEY,
+      offre_id INTEGER NOT NULL REFERENCES offres(id),
+      locataire_id INTEGER NOT NULL REFERENCES users(id),
+      motif TEXT NOT NULL,
+      details TEXT,
+      statut TEXT NOT NULL DEFAULT 'en_attente',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    ALTER TABLE signalements DROP CONSTRAINT IF EXISTS signalements_statut_check;
+    ALTER TABLE signalements ADD CONSTRAINT signalements_statut_check
+      CHECK (statut IN ('en_attente','traite','rejete'));
+  `);
+  console.log("✅ Table signalements prête.");
+
+  // ── Migration : avis sur le quartier (commune), réservé à ceux qui y ont eu un bail signé ──
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS avis_quartier (
+      id SERIAL PRIMARY KEY,
+      commune TEXT NOT NULL,
+      locataire_id INTEGER NOT NULL REFERENCES users(id),
+      note_securite INTEGER NOT NULL,
+      note_services INTEGER NOT NULL,
+      note_transport INTEGER NOT NULL,
+      commentaire TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(commune, locataire_id)
+    );
+    ALTER TABLE avis_quartier DROP CONSTRAINT IF EXISTS avis_quartier_note_securite_check;
+    ALTER TABLE avis_quartier ADD CONSTRAINT avis_quartier_note_securite_check CHECK (note_securite BETWEEN 1 AND 5);
+    ALTER TABLE avis_quartier DROP CONSTRAINT IF EXISTS avis_quartier_note_services_check;
+    ALTER TABLE avis_quartier ADD CONSTRAINT avis_quartier_note_services_check CHECK (note_services BETWEEN 1 AND 5);
+    ALTER TABLE avis_quartier DROP CONSTRAINT IF EXISTS avis_quartier_note_transport_check;
+    ALTER TABLE avis_quartier ADD CONSTRAINT avis_quartier_note_transport_check CHECK (note_transport BETWEEN 1 AND 5);
+  `);
+  console.log("✅ Table avis_quartier prête.");
+
   await ensureAdmin();
 }
 
