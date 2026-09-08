@@ -3,6 +3,7 @@ const { query } = require("../db");
 const { requireAuth, requireRole } = require("../auth");
 const { auditLog } = require("../audit");
 const { statsBailleur } = require("./abonnements");
+const { notify } = require("../notify");
 
 const router = express.Router();
 
@@ -33,6 +34,22 @@ router.post("/", requireAuth, requireRole("bailleur","intermediaire"), async (re
     const o = await query(`INSERT INTO offres (propriete_id) VALUES ($1) RETURNING id`, [p.rows[0].id]);
 
     await auditLog(user.id, "offre_publiee", { offre_id: o.rows[0].id });
+
+    // ── Alertes de recherche : notifie les locataires dont les critères correspondent ──
+    try {
+      const matches = await query(
+        `SELECT id, locataire_id FROM alertes
+         WHERE actif = TRUE
+           AND (commune IS NULL OR commune ILIKE $1)
+           AND (type IS NULL OR type = $2)
+           AND (budget_max IS NULL OR budget_max >= $3)
+           AND (chambres IS NULL OR chambres <= $4)`,
+        [commune, type, loyer_usd, chambres || 1]
+      );
+      for (const m of matches.rows) {
+        await notify(m.locataire_id, `Nouvelle offre correspondant à votre alerte : "${titre}" — ${commune}, ${loyer_usd} USD/mois.`, "in_app");
+      }
+    } catch (e) { console.error("Erreur notification alertes :", e); }
 
     res.status(201).json({
       message: "Offre publiée. Le badge \"Vérification en cours\" reste affiché tant que le titre de propriété n'est pas contrôlé.",
