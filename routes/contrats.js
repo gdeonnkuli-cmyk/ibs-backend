@@ -46,15 +46,39 @@ router.get("/:id", requireAuth, async (req, res) => {
 // ── Mes contrats ──────────────────────────────────────
 router.get("/", requireAuth, async (req, res) => {
   try {
-    const col = req.user.role === "bailleur" ? "bailleur_id" : "locataire_id";
+    const col = (req.user.role === "bailleur" || req.user.role === "intermediaire") ? "bailleur_id" : "locataire_id";
     const r = await query(
       `SELECT c.id, c.statut, c.loyer_usd, c.duree_mois, c.signed_at, c.reference_signature,
+              c.bailleur_id, c.locataire_id, c.dernier_rappel_echeance,
               p.titre, p.commune
        FROM contrats c JOIN offres o ON o.id = c.offre_id JOIN proprietes p ON p.id = o.propriete_id
        WHERE c.${col} = $1 ORDER BY c.created_at DESC`,
       [req.user.id]
     );
-    res.json({ contrats: r.rows });
+
+    // ── Rappel de fin de bail : calcul + notification throttlée (1 fois max tous les 7 jours) ──
+    const contrats = [];
+    for (const c of r.rows) {
+      let date_fin = null, jours_restants = null;
+      if (c.statut === "signe" && c.signed_at) {
+        const fin = new Date(c.signed_at);
+        fin.setMonth(fin.getMonth() + c.duree_mois);
+        date_fin = fin.toISOString().slice(0, 10);
+        jours_restants = Math.ceil((fin - new Date()) / (1000 * 60 * 60 * 24));
+
+        if (jours_restants >= 0 && jours_restants <= 30) {
+          const dejaRappele = c.dernier_rappel_echeance &&
+            (Date.now() - new Date(c.dernier_rappel_echeance).getTime()) < 7 * 24 * 60 * 60 * 1000;
+          if (!dejaRappele) {
+            await notify(c.bailleur_id, `Le bail "${c.titre}" se termine dans ${jours_restants} jour(s) (${date_fin}).`, "in_app");
+            await notify(c.locataire_id, `Votre bail "${c.titre}" se termine dans ${jours_restants} jour(s) (${date_fin}).`, "in_app");
+            await query(`UPDATE contrats SET dernier_rappel_echeance = NOW() WHERE id = $1`, [c.id]);
+          }
+        }
+      }
+      contrats.push({ ...c, date_fin, jours_restants });
+    }
+    res.json({ contrats });
   } catch (e) { console.error(e); res.status(500).json({ error: "Erreur serveur." }); }
 });
 
