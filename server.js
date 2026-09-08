@@ -27,6 +27,7 @@ app.use("/api/paiements", require("./routes/paiements"));
 app.use("/api/avis", require("./routes/avis"));
 app.use("/api/messages", require("./routes/messages"));
 app.use("/api/alertes", require("./routes/alertes"));
+app.use("/api/favoris", require("./routes/favoris"));
 
 app.use((req, res) => res.status(404).json({ error: "Route introuvable." }));
 app.use((err, req, res, next) => {
