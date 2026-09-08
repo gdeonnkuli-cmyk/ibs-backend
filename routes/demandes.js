@@ -45,7 +45,8 @@ router.get("/recues", requireAuth, requireRole("bailleur","intermediaire"), asyn
     const r = await query(
       `SELECT d.id AS demande_id, d.statut, d.message, d.created_at,
               o.id AS offre_id, p.titre,
-              u.id AS locataire_id, u.nom AS locataire_nom, u.telephone AS locataire_telephone
+              u.id AS locataire_id, u.nom AS locataire_nom, u.telephone AS locataire_telephone,
+              u.profession, u.revenu_usd, u.nb_occupants
        FROM demandes d
        JOIN offres o ON o.id = d.offre_id
        JOIN proprietes p ON p.id = o.propriete_id
