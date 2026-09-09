@@ -1,6 +1,7 @@
 const express = require("express");
+const jwt = require("jsonwebtoken");
 const { query } = require("../db");
-const { requireAuth, requireRole } = require("../auth");
+const { requireAuth, requireRole, JWT_SECRET } = require("../auth");
 const { auditLog } = require("../audit");
 const { statsBailleur, computeConfiance } = require("./abonnements");
 const { notify } = require("../notify");
@@ -108,6 +109,15 @@ router.get("/:id", async (req, res) => {
     );
     const offre = r.rows[0];
     if (!offre) return res.status(404).json({ error: "Offre introuvable." });
+
+    // ── Le titre de propriété est un document de vérification, pas une pièce publique :
+    //    on le retire de la réponse sauf pour le bailleur propriétaire ou un admin. ──
+    let viewer = null;
+    const header = req.headers.authorization || "";
+    const token = header.startsWith("Bearer ") ? header.slice(7) : null;
+    if (token) { try { viewer = jwt.verify(token, JWT_SECRET); } catch { viewer = null; } }
+    const estProprietaireOuAdmin = viewer && (viewer.id === offre.bailleur_id || viewer.role === "admin");
+    if (!estProprietaireOuAdmin) delete offre.titre_propriete_url;
 
     const stats = await statsBailleur(offre.bailleur_id);
     offre.tier = stats.tier;
