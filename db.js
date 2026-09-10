@@ -288,6 +288,32 @@ async function migrate() {
   `);
   console.log("✅ Champ photos disponible sur les offres.");
 
+  // ── Migration : sous-comptes agents (une agence peut créer des agents rattachés) ──
+  await pool.query(`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS agence_id INTEGER REFERENCES users(id);
+  `);
+  console.log("✅ Champ agence_id disponible (sous-comptes agents).");
+
+  // ── Migration : compte désactivable (utilisé pour retirer l'accès d'un agent sans casser l'historique) ──
+  await pool.query(`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS actif BOOLEAN NOT NULL DEFAULT TRUE;
+  `);
+  console.log("✅ Champ actif disponible sur les comptes.");
+
+  // ── Migration : multi-mandants (l'agence gère un bien pour le compte d'un propriétaire réel) ──
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mandants (
+      id SERIAL PRIMARY KEY,
+      intermediaire_id INTEGER NOT NULL REFERENCES users(id),
+      nom TEXT NOT NULL,
+      telephone TEXT,
+      commune TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    ALTER TABLE proprietes ADD COLUMN IF NOT EXISTS mandant_id INTEGER REFERENCES mandants(id);
+  `);
+  console.log("✅ Table mandants prête.");
+
   await ensureAdmin();
 }
 
