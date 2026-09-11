@@ -79,6 +79,9 @@ router.post("/login", async (req, res) => {
     if (!user.telephone_verifie) {
       return res.status(403).json({ error: "Téléphone non vérifié. Demandez un nouveau code." });
     }
+    if (!user.actif) {
+      return res.status(403).json({ error: "Cet accès a été désactivé. Contactez votre agence ou l'équipe IBS." });
+    }
     await auditLog(user.id, "connexion");
     const token = signToken(user);
     res.json({ token, user: publicUser(user) });
@@ -99,7 +102,12 @@ router.post("/resend-otp", async (req, res) => {
 router.get("/me", requireAuth, async (req, res) => {
   try {
     const r = await query(`SELECT * FROM users WHERE id = $1`, [req.user.id]);
-    res.json({ user: publicUser(r.rows[0]) });
+    const user = publicUser(r.rows[0]);
+    if (user && user.agence_id) {
+      const a = await query(`SELECT nom FROM users WHERE id = $1`, [user.agence_id]);
+      user.agence_nom = a.rows[0]?.nom || null;
+    }
+    res.json({ user });
   } catch (e) { console.error(e); res.status(500).json({ error: "Erreur serveur." }); }
 });
 
