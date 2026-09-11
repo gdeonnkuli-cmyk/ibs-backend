@@ -339,6 +339,26 @@ async function migrate() {
   `);
   console.log("✅ Table abonnements_premium prête.");
 
+  // ── Migration : planification de visite ──
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS visites (
+      id SERIAL PRIMARY KEY,
+      offre_id INTEGER NOT NULL REFERENCES offres(id),
+      locataire_id INTEGER NOT NULL REFERENCES users(id),
+      bailleur_id INTEGER NOT NULL REFERENCES users(id),
+      date_proposee TIMESTAMPTZ NOT NULL,
+      statut TEXT NOT NULL DEFAULT 'en_attente',
+      dernier_proposant TEXT NOT NULL DEFAULT 'locataire',
+      message TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    ALTER TABLE visites DROP CONSTRAINT IF EXISTS visites_statut_check;
+    ALTER TABLE visites ADD CONSTRAINT visites_statut_check CHECK (statut IN ('en_attente','acceptee','refusee','annulee'));
+    ALTER TABLE visites DROP CONSTRAINT IF EXISTS visites_proposant_check;
+    ALTER TABLE visites ADD CONSTRAINT visites_proposant_check CHECK (dernier_proposant IN ('locataire','bailleur'));
+  `);
+  console.log("✅ Table visites prête.");
+
   await ensureAdmin();
 }
 
