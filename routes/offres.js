@@ -8,6 +8,24 @@ const { notify } = require("../notify");
 
 const router = express.Router();
 
+// ── Prix marché : moyenne des loyers actifs dans une commune (± le type de bien) ──
+async function calculerPrixMarche(commune, type) {
+  const r = await query(
+    `SELECT AVG(p.loyer_usd) AS moyenne, MIN(p.loyer_usd) AS min, MAX(p.loyer_usd) AS max, COUNT(*) AS n
+     FROM offres o JOIN proprietes p ON p.id = o.propriete_id
+     WHERE o.statut IN ('active','louee') AND p.commune = $1 AND p.type = $2`,
+    [commune, type]
+  );
+  const row = r.rows[0];
+  return { count: Number(row.n), moyenne: row.moyenne ? Math.round(Number(row.moyenne)) : null, min: row.min, max: row.max };
+}
+// ── Un loyer trop éloigné de la moyenne du quartier est flaggé pour revue admin
+//    (jamais bloqué ni masqué — juste signalé, l'échantillon doit être suffisant pour éviter les faux positifs). ──
+function estPrixSuspect(loyer, marche) {
+  if (marche.count < 3 || !marche.moyenne) return false;
+  return loyer < marche.moyenne * 0.4 || loyer > marche.moyenne * 2.5;
+}
+
 // ── Publier une offre (bailleur, identité vérifiée requise) ──
 router.post("/", requireAuth, requireRole("bailleur","intermediaire"), async (req, res) => {
   try {
@@ -32,13 +50,17 @@ router.post("/", requireAuth, requireRole("bailleur","intermediaire"), async (re
       if (m.rows.length) mandantIdOk = m.rows[0].id;
     }
 
+    // ── Suggestion / détection : compare au marché de la commune avant insertion ──
+    const marche = await calculerPrixMarche(commune, type);
+    const prixSuspect = estPrixSuspect(Number(loyer_usd), marche);
+
     const p = await query(
       `INSERT INTO proprietes (bailleur_id, titre, type, commune, adresse, chambres, loyer_usd, description, titre_propriete_url,
-                                garantie_mois, charges_incluses, equipements, disponibilite, photos, mandant_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,
+                                garantie_mois, charges_incluses, equipements, disponibilite, photos, mandant_id, prix_suspect)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`,
       [agenceId, titre, type, commune, adresse || null, chambres || 1, loyer_usd, description || null, titre_propriete_url || null,
        garantie_mois ? Number(garantie_mois) : null, !!charges_incluses, Array.isArray(equipements) ? equipements : [], dispoOk,
-       Array.isArray(photos) ? photos.slice(0, 8) : [], mandantIdOk]
+       Array.isArray(photos) ? photos.slice(0, 8) : [], mandantIdOk, prixSuspect]
     );
 
     const o = await query(`INSERT INTO offres (propriete_id) VALUES ($1) RETURNING id`, [p.rows[0].id]);
@@ -64,19 +86,32 @@ router.post("/", requireAuth, requireRole("bailleur","intermediaire"), async (re
     res.status(201).json({
       message: "Offre publiée. Le badge \"Vérification en cours\" reste affiché tant que le titre de propriété n'est pas contrôlé.",
       offre_id: o.rows[0].id,
+      prix_suspect: prixSuspect,
+      prix_marche: marche,
     });
+  } catch (e) { console.error(e); res.status(500).json({ error: "Erreur serveur." }); }
+});
+
+// ── Prix du marché pour une commune + un type (public, utilisé par le formulaire de publication) ──
+router.get("/prix-marche", async (req, res) => {
+  try {
+    const { commune, type } = req.query;
+    if (!commune || !type) return res.status(400).json({ error: "commune et type sont requis." });
+    res.json(await calculerPrixMarche(commune, type));
   } catch (e) { console.error(e); res.status(500).json({ error: "Erreur serveur." }); }
 });
 
 // ── Recherche / liste des offres (public) ────────────
 router.get("/", async (req, res) => {
   try {
-    const { commune, budget_max, type, chambres, equipements, garantie_max, charges_incluses, disponibilite } = req.query;
+    const { commune, budget_max, type, chambres, equipements, garantie_max, charges_incluses, disponibilite, tri } = req.query;
     let sql = `
       SELECT o.id AS offre_id, o.statut, o.vues, o.created_at,
              p.titre, p.type, p.commune, p.adresse, p.chambres, p.loyer_usd, p.description,
              p.statut_verification, p.garantie_mois, p.charges_incluses, p.equipements, p.disponibilite, p.photos,
-             u.nom AS bailleur_nom
+             u.nom AS bailleur_nom,
+             (SELECT COALESCE(AVG(a.note),0) FROM avis a WHERE a.bailleur_id = p.bailleur_id) AS bailleur_note,
+             (SELECT COUNT(*) FROM contrats c WHERE c.bailleur_id = p.bailleur_id AND c.statut = 'signe') AS bailleur_baux_signes
       FROM offres o
       JOIN proprietes p ON p.id = o.propriete_id
       JOIN users u ON u.id = p.bailleur_id
@@ -95,7 +130,20 @@ router.get("/", async (req, res) => {
       const codes = equipements.split(",").map(s => s.trim()).filter(Boolean);
       if (codes.length) { params.push(codes); sql += ` AND p.equipements @> $${params.length}::text[]`; }
     }
-    sql += ` ORDER BY o.created_at DESC`;
+
+    if (tri === "recent") {
+      sql += ` ORDER BY o.created_at DESC`;
+    } else {
+      // ── Pertinence : titre vérifié + volume de baux signés + note moyenne + fraîcheur de 14 jours ──
+      sql += `
+        ORDER BY
+          (CASE WHEN p.statut_verification = 'verifie' THEN 3 ELSE 0 END) +
+          (CASE WHEN bailleur_baux_signes >= 15 THEN 4 WHEN bailleur_baux_signes >= 5 THEN 3 WHEN bailleur_baux_signes >= 1 THEN 2 ELSE 0 END) +
+          bailleur_note +
+          (CASE WHEN o.created_at >= NOW() - INTERVAL '14 days' THEN 1 ELSE 0 END)
+        DESC, o.created_at DESC
+      `;
+    }
 
     const r = await query(sql, params);
     res.json({ count: r.rows.length, offres: r.rows });
@@ -147,7 +195,7 @@ router.get("/mine/liste", requireAuth, requireRole("bailleur","intermediaire"), 
   try {
     const r = await query(
       `SELECT o.id AS offre_id, o.statut, o.vues, p.titre, p.commune, p.loyer_usd, p.statut_verification,
-              p.garantie_mois, p.charges_incluses, p.disponibilite, mn.nom AS mandant_nom
+              p.garantie_mois, p.charges_incluses, p.disponibilite, p.prix_suspect, mn.nom AS mandant_nom
        FROM offres o JOIN proprietes p ON p.id = o.propriete_id
        LEFT JOIN mandants mn ON mn.id = p.mandant_id
        WHERE p.bailleur_id = $1 ORDER BY o.created_at DESC`,
@@ -161,9 +209,10 @@ router.get("/mine/liste", requireAuth, requireRole("bailleur","intermediaire"), 
 router.get("/admin/verification-pending", requireAuth, requireRole("admin"), async (req, res) => {
   try {
     const r = await query(
-      `SELECT p.id, p.titre, p.commune, p.bailleur_id, p.titre_propriete_url, u.nom AS bailleur_nom
+      `SELECT p.id, p.titre, p.commune, p.bailleur_id, p.titre_propriete_url, p.loyer_usd, p.prix_suspect, u.nom AS bailleur_nom
        FROM proprietes p JOIN users u ON u.id = p.bailleur_id
-       WHERE p.statut_verification = 'en_attente'`
+       WHERE p.statut_verification = 'en_attente'
+       ORDER BY p.prix_suspect DESC`
     );
     res.json({ proprietes: r.rows });
   } catch (e) { console.error(e); res.status(500).json({ error: "Erreur serveur." }); }
@@ -198,14 +247,16 @@ router.patch("/:id", requireAuth, requireRole("bailleur","intermediaire"), async
       const m = await query(`SELECT id FROM mandants WHERE id = $1 AND intermediaire_id = $2`, [mandant_id, agenceIdDe(req.user)]);
       if (m.rows.length) mandantIdOk = m.rows[0].id;
     }
+    const marche = await calculerPrixMarche(commune, req.body.type || (await query(`SELECT type FROM proprietes WHERE id = $1`, [check.rows[0].id])).rows[0].type);
+    const prixSuspect = estPrixSuspect(Number(loyer_usd), marche);
 
     await query(
       `UPDATE proprietes SET titre = $1, commune = $2, adresse = $3, chambres = $4, loyer_usd = $5, description = $6,
-              garantie_mois = $7, charges_incluses = $8, equipements = $9, disponibilite = $10, photos = $11, mandant_id = $12
-       WHERE id = $13`,
+              garantie_mois = $7, charges_incluses = $8, equipements = $9, disponibilite = $10, photos = $11, mandant_id = $12, prix_suspect = $13
+       WHERE id = $14`,
       [titre, commune, adresse || null, chambres || 1, loyer_usd, description || null,
        garantie_mois ? Number(garantie_mois) : null, !!charges_incluses, Array.isArray(equipements) ? equipements : [], dispoOk,
-       Array.isArray(photos) ? photos.slice(0, 8) : [], mandantIdOk, check.rows[0].id]
+       Array.isArray(photos) ? photos.slice(0, 8) : [], mandantIdOk, prixSuspect, check.rows[0].id]
     );
     await auditLog(req.user.id, "offre_modifiee", { offre_id: req.params.id });
     res.json({ message: "Offre mise à jour." });
