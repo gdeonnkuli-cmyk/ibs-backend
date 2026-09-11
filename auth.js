@@ -6,7 +6,14 @@ const jwt = require("jsonwebtoken");
 const JWT_SECRET = process.env.JWT_SECRET || "changeme_dev_secret";
 
 function signToken(user) {
-  return jwt.sign({ id: user.id, role: user.role, nom: user.nom }, JWT_SECRET, { expiresIn: "30d" });
+  return jwt.sign({ id: user.id, role: user.role, nom: user.nom, agence_id: user.agence_id || null }, JWT_SECRET, { expiresIn: "30d" });
+}
+
+// ── Sous-comptes agents : un agent rattaché (agence_id renseigné) agit toujours
+//    pour le compte de l'agence principale — toutes les données (offres, contrats,
+//    revenus...) sont donc rattachées à l'id de l'agence, jamais à celui de l'agent. ──
+function agenceIdDe(user) {
+  return (user && user.agence_id) || (user && user.id);
 }
 
 function requireAuth(req, res, next) {
@@ -30,4 +37,4 @@ function requireRole(...roles) {
   };
 }
 
-module.exports = { signToken, requireAuth, requireRole, JWT_SECRET };
+module.exports = { signToken, requireAuth, requireRole, JWT_SECRET, agenceIdDe };
