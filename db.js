@@ -314,6 +314,12 @@ async function migrate() {
   `);
   console.log("✅ Table mandants prête.");
 
+  // ── Migration : détection de prix anormal (comparaison au marché du quartier à la publication) ──
+  await pool.query(`
+    ALTER TABLE proprietes ADD COLUMN IF NOT EXISTS prix_suspect BOOLEAN NOT NULL DEFAULT FALSE;
+  `);
+  console.log("✅ Champ prix_suspect disponible.");
+
   await ensureAdmin();
 }
 
