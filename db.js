@@ -320,6 +320,25 @@ async function migrate() {
   `);
   console.log("✅ Champ prix_suspect disponible.");
 
+  // ── Migration : abonnement Premium bailleur (paiement Flutterwave) ──
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS abonnements_premium (
+      id SERIAL PRIMARY KEY,
+      bailleur_id INTEGER NOT NULL REFERENCES users(id),
+      statut TEXT NOT NULL DEFAULT 'inactif',
+      montant_usd REAL NOT NULL,
+      tx_ref TEXT UNIQUE NOT NULL,
+      flutterwave_transaction_id TEXT,
+      date_debut TIMESTAMPTZ,
+      date_expiration TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    ALTER TABLE abonnements_premium DROP CONSTRAINT IF EXISTS abonnements_premium_statut_check;
+    ALTER TABLE abonnements_premium ADD CONSTRAINT abonnements_premium_statut_check
+      CHECK (statut IN ('inactif','actif','expire'));
+  `);
+  console.log("✅ Table abonnements_premium prête.");
+
   await ensureAdmin();
 }
 
