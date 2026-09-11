@@ -1,7 +1,7 @@
 const express = require("express");
 const jwt = require("jsonwebtoken");
 const { query } = require("../db");
-const { requireAuth, requireRole, JWT_SECRET } = require("../auth");
+const { requireAuth, requireRole, JWT_SECRET, agenceIdDe } = require("../auth");
 const { auditLog } = require("../audit");
 const { statsBailleur, computeConfiance } = require("./abonnements");
 const { notify } = require("../notify");
@@ -18,19 +18,27 @@ router.post("/", requireAuth, requireRole("bailleur","intermediaire"), async (re
     }
 
     const { titre, type, commune, adresse, chambres, loyer_usd, description, titre_propriete_url,
-            garantie_mois, charges_incluses, equipements, disponibilite, photos } = req.body;
+            garantie_mois, charges_incluses, equipements, disponibilite, photos, mandant_id } = req.body;
     if (!titre || !type || !commune || !loyer_usd) {
       return res.status(400).json({ error: "Titre, type, commune et loyer sont requis." });
     }
     const dispoOk = ["immediat", "sous_7j", "sous_30j"].includes(disponibilite) ? disponibilite : "immediat";
+    const agenceId = agenceIdDe(req.user);
+
+    // ── Si un mandant est précisé, vérifier qu'il appartient bien à cette agence ──
+    let mandantIdOk = null;
+    if (mandant_id) {
+      const m = await query(`SELECT id FROM mandants WHERE id = $1 AND intermediaire_id = $2`, [mandant_id, agenceId]);
+      if (m.rows.length) mandantIdOk = m.rows[0].id;
+    }
 
     const p = await query(
       `INSERT INTO proprietes (bailleur_id, titre, type, commune, adresse, chambres, loyer_usd, description, titre_propriete_url,
-                                garantie_mois, charges_incluses, equipements, disponibilite, photos)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id`,
-      [user.id, titre, type, commune, adresse || null, chambres || 1, loyer_usd, description || null, titre_propriete_url || null,
+                                garantie_mois, charges_incluses, equipements, disponibilite, photos, mandant_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,
+      [agenceId, titre, type, commune, adresse || null, chambres || 1, loyer_usd, description || null, titre_propriete_url || null,
        garantie_mois ? Number(garantie_mois) : null, !!charges_incluses, Array.isArray(equipements) ? equipements : [], dispoOk,
-       Array.isArray(photos) ? photos.slice(0, 8) : []]
+       Array.isArray(photos) ? photos.slice(0, 8) : [], mandantIdOk]
     );
 
     const o = await query(`INSERT INTO offres (propriete_id) VALUES ($1) RETURNING id`, [p.rows[0].id]);
@@ -100,24 +108,26 @@ router.get("/:id", async (req, res) => {
     const r = await query(
       `SELECT o.id AS offre_id, o.statut, o.vues, o.created_at,
               p.*, u.nom AS bailleur_nom, u.telephone AS bailleur_telephone,
-              (SELECT COUNT(*) FROM abonnements ab WHERE ab.bailleur_id = p.bailleur_id) AS abonnes_count
+              (SELECT COUNT(*) FROM abonnements ab WHERE ab.bailleur_id = p.bailleur_id) AS abonnes_count,
+              m.nom AS mandant_nom, m.telephone AS mandant_telephone
        FROM offres o
        JOIN proprietes p ON p.id = o.propriete_id
        JOIN users u ON u.id = p.bailleur_id
+       LEFT JOIN mandants m ON m.id = p.mandant_id
        WHERE o.id = $1`,
       [req.params.id]
     );
     const offre = r.rows[0];
     if (!offre) return res.status(404).json({ error: "Offre introuvable." });
 
-    // ── Le titre de propriété est un document de vérification, pas une pièce publique :
-    //    on le retire de la réponse sauf pour le bailleur propriétaire ou un admin. ──
+    // ── Le titre de propriété et le contact du mandant sont des informations de vérification,
+    //    pas des données publiques : retirées sauf pour l'agence propriétaire (agent inclus) ou un admin. ──
     let viewer = null;
     const header = req.headers.authorization || "";
     const token = header.startsWith("Bearer ") ? header.slice(7) : null;
     if (token) { try { viewer = jwt.verify(token, JWT_SECRET); } catch { viewer = null; } }
-    const estProprietaireOuAdmin = viewer && (viewer.id === offre.bailleur_id || viewer.role === "admin");
-    if (!estProprietaireOuAdmin) delete offre.titre_propriete_url;
+    const estProprietaireOuAdmin = viewer && ((agenceIdDe(viewer) === offre.bailleur_id) || viewer.role === "admin");
+    if (!estProprietaireOuAdmin) { delete offre.titre_propriete_url; delete offre.mandant_telephone; }
 
     const stats = await statsBailleur(offre.bailleur_id);
     offre.tier = stats.tier;
@@ -137,10 +147,11 @@ router.get("/mine/liste", requireAuth, requireRole("bailleur","intermediaire"), 
   try {
     const r = await query(
       `SELECT o.id AS offre_id, o.statut, o.vues, p.titre, p.commune, p.loyer_usd, p.statut_verification,
-              p.garantie_mois, p.charges_incluses, p.disponibilite
+              p.garantie_mois, p.charges_incluses, p.disponibilite, mn.nom AS mandant_nom
        FROM offres o JOIN proprietes p ON p.id = o.propriete_id
+       LEFT JOIN mandants mn ON mn.id = p.mandant_id
        WHERE p.bailleur_id = $1 ORDER BY o.created_at DESC`,
-      [req.user.id]
+      [agenceIdDe(req.user)]
     );
     res.json({ offres: r.rows });
   } catch (e) { console.error(e); res.status(500).json({ error: "Erreur serveur." }); }
@@ -176,18 +187,25 @@ router.patch("/:id", requireAuth, requireRole("bailleur","intermediaire"), async
       [req.params.id]
     );
     if (!check.rows.length) return res.status(404).json({ error: "Offre introuvable." });
-    if (check.rows[0].bailleur_id !== req.user.id) return res.status(403).json({ error: "Cette offre ne vous appartient pas." });
+    if (check.rows[0].bailleur_id !== agenceIdDe(req.user)) return res.status(403).json({ error: "Cette offre ne vous appartient pas." });
 
     const { titre, commune, adresse, chambres, loyer_usd, description,
-            garantie_mois, charges_incluses, equipements, disponibilite, photos } = req.body;
+            garantie_mois, charges_incluses, equipements, disponibilite, photos, mandant_id } = req.body;
     const dispoOk = ["immediat", "sous_7j", "sous_30j"].includes(disponibilite) ? disponibilite : "immediat";
+
+    let mandantIdOk = null;
+    if (mandant_id) {
+      const m = await query(`SELECT id FROM mandants WHERE id = $1 AND intermediaire_id = $2`, [mandant_id, agenceIdDe(req.user)]);
+      if (m.rows.length) mandantIdOk = m.rows[0].id;
+    }
+
     await query(
       `UPDATE proprietes SET titre = $1, commune = $2, adresse = $3, chambres = $4, loyer_usd = $5, description = $6,
-              garantie_mois = $7, charges_incluses = $8, equipements = $9, disponibilite = $10, photos = $11
-       WHERE id = $12`,
+              garantie_mois = $7, charges_incluses = $8, equipements = $9, disponibilite = $10, photos = $11, mandant_id = $12
+       WHERE id = $13`,
       [titre, commune, adresse || null, chambres || 1, loyer_usd, description || null,
        garantie_mois ? Number(garantie_mois) : null, !!charges_incluses, Array.isArray(equipements) ? equipements : [], dispoOk,
-       Array.isArray(photos) ? photos.slice(0, 8) : [], check.rows[0].id]
+       Array.isArray(photos) ? photos.slice(0, 8) : [], mandantIdOk, check.rows[0].id]
     );
     await auditLog(req.user.id, "offre_modifiee", { offre_id: req.params.id });
     res.json({ message: "Offre mise à jour." });
@@ -205,7 +223,7 @@ router.post("/:id/statut", requireAuth, requireRole("bailleur","intermediaire"),
       [req.params.id]
     );
     if (!check.rows.length) return res.status(404).json({ error: "Offre introuvable." });
-    if (check.rows[0].bailleur_id !== req.user.id) return res.status(403).json({ error: "Cette offre ne vous appartient pas." });
+    if (check.rows[0].bailleur_id !== agenceIdDe(req.user)) return res.status(403).json({ error: "Cette offre ne vous appartient pas." });
     if (check.rows[0].statut === "louee") return res.status(400).json({ error: "Ce bien est déjà loué — impossible de changer son statut." });
 
     await query(`UPDATE offres SET statut = $1 WHERE id = $2`, [statut, req.params.id]);
