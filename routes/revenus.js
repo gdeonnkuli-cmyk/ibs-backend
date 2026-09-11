@@ -3,6 +3,7 @@ const PDFDocument = require("pdfkit");
 const jwt = require("jsonwebtoken");
 const { query } = require("../db");
 const { requireAuth, requireRole, JWT_SECRET, agenceIdDe } = require("../auth");
+const { appliquerFiligrane } = require("../pdfWatermark");
 
 const router = express.Router();
 
@@ -126,6 +127,7 @@ router.get("/export.pdf", async (req, res) => {
 
     const agenceId = agenceIdDe(user);
     const u = await query(`SELECT nom FROM users WHERE id = $1`, [agenceId]);
+    const viewerRow = await query(`SELECT telephone FROM users WHERE id = $1`, [user.id]);
     const data = await chargerDonneesRevenus(agenceId);
 
     const NAVY = "#0D1B3E", GOLD = "#C9963A", MUTED = "#5B6072", GR = "#2F6B4A";
@@ -184,6 +186,8 @@ router.get("/export.pdf", async (req, res) => {
       "IBS ne transite jamais les fonds — ce document est un récapitulatif déclaratif, pas une preuve de paiement bancaire.",
       { width: 480 }
     );
+
+    appliquerFiligrane(doc, { nom: user.nom, telephone: viewerRow.rows[0]?.telephone });
 
     doc.end();
   } catch (e) { console.error(e); if (!res.headersSent) res.status(500).json({ error: "Erreur serveur." }); }
