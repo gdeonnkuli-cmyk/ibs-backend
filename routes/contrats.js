@@ -3,7 +3,7 @@ const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
 const PDFDocument = require("pdfkit");
 const { query } = require("../db");
-const { requireAuth, JWT_SECRET } = require("../auth");
+const { requireAuth, JWT_SECRET, agenceIdDe } = require("../auth");
 const { notify, generateOtp, verifyOtp } = require("../notify");
 const { auditLog } = require("../audit");
 
@@ -26,7 +26,7 @@ async function getContrat(id) {
 }
 
 function assertPartie(req, res, contrat) {
-  if (contrat.bailleur_id !== req.user.id && contrat.locataire_id !== req.user.id) {
+  if (contrat.bailleur_id !== agenceIdDe(req.user) && contrat.locataire_id !== req.user.id) {
     res.status(403).json({ error: "Ce contrat ne vous concerne pas." });
     return false;
   }
@@ -47,13 +47,14 @@ router.get("/:id", requireAuth, async (req, res) => {
 router.get("/", requireAuth, async (req, res) => {
   try {
     const col = (req.user.role === "bailleur" || req.user.role === "intermediaire") ? "bailleur_id" : "locataire_id";
+    const filterId = col === "bailleur_id" ? agenceIdDe(req.user) : req.user.id;
     const r = await query(
       `SELECT c.id, c.statut, c.loyer_usd, c.duree_mois, c.signed_at, c.reference_signature,
               c.bailleur_id, c.locataire_id, c.dernier_rappel_echeance,
               p.titre, p.commune
        FROM contrats c JOIN offres o ON o.id = c.offre_id JOIN proprietes p ON p.id = o.propriete_id
        WHERE c.${col} = $1 ORDER BY c.created_at DESC`,
-      [req.user.id]
+      [filterId]
     );
 
     // ── Rappel de fin de bail : calcul + notification throttlée (1 fois max tous les 7 jours) ──
@@ -88,7 +89,7 @@ router.post("/:id/preparer", requireAuth, async (req, res) => {
     const contrat = await getContrat(req.params.id);
     if (!contrat) return res.status(404).json({ error: "Contrat introuvable." });
     if (!assertPartie(req, res, contrat)) return;
-    if (contrat.bailleur_id !== req.user.id) return res.status(403).json({ error: "Seul le bailleur prépare le contrat." });
+    if (contrat.bailleur_id !== agenceIdDe(req.user)) return res.status(403).json({ error: "Seul le bailleur prépare le contrat." });
     if (contrat.statut !== "brouillon") return res.status(400).json({ error: "Ce contrat n'est plus modifiable." });
 
     const { duree_mois, reception_loyer } = req.body;
@@ -117,7 +118,7 @@ router.post("/:id/confirmer", requireAuth, async (req, res) => {
       return res.status(400).json({ error: "Les trois engagements doivent être acceptés pour continuer." });
     }
 
-    const estBailleur = contrat.bailleur_id === req.user.id;
+    const estBailleur = contrat.bailleur_id === agenceIdDe(req.user);
     const cniStatut = estBailleur ? contrat.bailleur_cni_statut : contrat.locataire_cni_statut;
     if (cniStatut !== "verifie") {
       return res.status(403).json({ error: "Votre identité doit être vérifiée par IBS avant de confirmer." });
@@ -141,7 +142,7 @@ router.post("/:id/renvoyer-otp-signature", requireAuth, async (req, res) => {
     const contrat = await getContrat(req.params.id);
     if (!contrat) return res.status(404).json({ error: "Contrat introuvable." });
     if (!assertPartie(req, res, contrat)) return;
-    const estBailleur = contrat.bailleur_id === req.user.id;
+    const estBailleur = contrat.bailleur_id === agenceIdDe(req.user);
     const telephone = estBailleur ? contrat.bailleur_telephone : contrat.locataire_telephone;
     await generateOtp(telephone, "signature", contrat.id);
     res.json({ message: "Nouveau code envoyé." });
@@ -156,7 +157,7 @@ router.post("/:id/signer", requireAuth, async (req, res) => {
     if (!assertPartie(req, res, contrat)) return;
     if (contrat.statut !== "en_signature") return res.status(400).json({ error: "Ce contrat n'est pas prêt pour signature." });
 
-    const estBailleur = contrat.bailleur_id === req.user.id;
+    const estBailleur = contrat.bailleur_id === agenceIdDe(req.user);
     if (estBailleur && !contrat.confirme_bailleur) return res.status(400).json({ error: "Confirmez vos informations avant de signer." });
     if (!estBailleur && !contrat.confirme_locataire) return res.status(400).json({ error: "Confirmez vos informations avant de signer." });
 
@@ -225,7 +226,7 @@ router.get("/:id/pdf", async (req, res) => {
 
     const contrat = await getContrat(req.params.id);
     if (!contrat) return res.status(404).json({ error: "Contrat introuvable." });
-    if (contrat.bailleur_id !== user.id && contrat.locataire_id !== user.id) {
+    if (contrat.bailleur_id !== agenceIdDe(user) && contrat.locataire_id !== user.id) {
       return res.status(403).json({ error: "Ce contrat ne vous concerne pas." });
     }
     if (contrat.statut !== "signe") return res.status(400).json({ error: "Ce contrat n'est pas encore signé." });
