@@ -37,6 +37,7 @@ app.use("/api/premium", require("./routes/premium"));
 app.use("/api/visites", require("./routes/visites"));
 app.use("/api/comptes", require("./routes/comptes"));
 app.use("/api/audit", require("./routes/audit"));
+app.use("/api/resume", require("./routes/resume"));
 
 app.use((req, res) => res.status(404).json({ error: "Route introuvable." }));
 app.use((err, req, res, next) => {
