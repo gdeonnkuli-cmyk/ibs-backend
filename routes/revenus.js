@@ -2,7 +2,7 @@ const express = require("express");
 const PDFDocument = require("pdfkit");
 const jwt = require("jsonwebtoken");
 const { query } = require("../db");
-const { requireAuth, requireRole, JWT_SECRET } = require("../auth");
+const { requireAuth, requireRole, JWT_SECRET, agenceIdDe } = require("../auth");
 
 const router = express.Router();
 
@@ -80,7 +80,7 @@ async function chargerDonneesRevenus(bailleurId) {
 // ── Tableau de bord (JSON, pour l'écran de l'app) ──
 router.get("/tableau-bord", requireAuth, requireRole("bailleur", "intermediaire"), async (req, res) => {
   try {
-    res.json(await chargerDonneesRevenus(req.user.id));
+    res.json(await chargerDonneesRevenus(agenceIdDe(req.user)));
   } catch (e) { console.error(e); res.status(500).json({ error: "Erreur serveur." }); }
 });
 
@@ -100,7 +100,7 @@ router.get("/export.csv", async (req, res) => {
        LEFT JOIN paiements_loyer pl ON pl.contrat_id = c.id
        WHERE c.bailleur_id = $1 AND c.statut = 'signe'
        ORDER BY p.titre, pl.mois`,
-      [user.id]
+      [agenceIdDe(user)]
     );
 
     const escape = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
@@ -124,8 +124,9 @@ router.get("/export.pdf", async (req, res) => {
     const user = authFromHeaderOrQuery(req);
     if (!user) return res.status(401).json({ error: "Authentification requise." });
 
-    const u = await query(`SELECT nom FROM users WHERE id = $1`, [user.id]);
-    const data = await chargerDonneesRevenus(user.id);
+    const agenceId = agenceIdDe(user);
+    const u = await query(`SELECT nom FROM users WHERE id = $1`, [agenceId]);
+    const data = await chargerDonneesRevenus(agenceId);
 
     const NAVY = "#0D1B3E", GOLD = "#C9963A", MUTED = "#5B6072", GR = "#2F6B4A";
     res.setHeader("Content-Type", "application/pdf");
