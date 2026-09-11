@@ -187,6 +187,17 @@ router.get("/:id", async (req, res) => {
     offre.avis_count = stats.avis_count;
     offre.confiance = computeConfiance(offre.statut_verification, stats.tier, stats.note_moyenne);
 
+    // ── Suggestions : autres offres actives, même commune, budget proche (± 30%), hors elle-même ──
+    const similaires = await query(
+      `SELECT o2.id AS offre_id, p2.titre, p2.commune, p2.type, p2.chambres, p2.loyer_usd, p2.photos, p2.statut_verification
+       FROM offres o2 JOIN proprietes p2 ON p2.id = o2.propriete_id
+       WHERE o2.statut = 'active' AND o2.id != $1 AND p2.commune = $2
+         AND p2.loyer_usd BETWEEN $3 AND $4
+       ORDER BY ABS(p2.loyer_usd - $5) ASC LIMIT 3`,
+      [offre.offre_id, offre.commune, Number(offre.loyer_usd) * 0.7, Number(offre.loyer_usd) * 1.3, offre.loyer_usd]
+    );
+    offre.similaires = similaires.rows;
+
     await query(`UPDATE offres SET vues = vues + 1 WHERE id = $1`, [req.params.id]);
     res.json({ offre });
   } catch (e) { console.error(e); res.status(500).json({ error: "Erreur serveur." }); }
