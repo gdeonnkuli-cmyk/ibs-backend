@@ -4,6 +4,7 @@ const jwt = require("jsonwebtoken");
 const { query } = require("../db");
 const { requireAuth, JWT_SECRET, agenceIdDe } = require("../auth");
 const { auditLog } = require("../audit");
+const { appliquerFiligrane } = require("../pdfWatermark");
 
 const router = express.Router();
 
@@ -90,7 +91,8 @@ router.get("/:contrat_id/recu/:mois", async (req, res) => {
 
     const moisDate = req.params.mois.length === 7 ? req.params.mois + "-01" : req.params.mois;
     const p = await query(
-      `SELECT pl.*, pr.titre, pr.commune, b.nom AS bailleur_nom, l.nom AS locataire_nom
+      `SELECT pl.*, pr.titre, pr.commune, b.nom AS bailleur_nom, b.telephone AS bailleur_telephone,
+              l.nom AS locataire_nom, l.telephone AS locataire_telephone
        FROM paiements_loyer pl
        JOIN contrats c2 ON c2.id = pl.contrat_id
        JOIN offres o ON o.id = c2.offre_id
@@ -136,6 +138,11 @@ router.get("/:contrat_id/recu/:mois", async (req, res) => {
       "IBS ne transite jamais les fonds — ce document n'est pas une preuve de virement bancaire.",
       { width: 480 }
     );
+
+    appliquerFiligrane(doc, {
+      nom: user.nom,
+      telephone: agenceIdDe(user) === c.bailleur_id ? paiement.bailleur_telephone : paiement.locataire_telephone,
+    });
 
     doc.end();
   } catch (e) { console.error(e); if (!res.headersSent) res.status(500).json({ error: "Erreur serveur." }); }
