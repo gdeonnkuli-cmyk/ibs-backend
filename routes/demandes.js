@@ -1,6 +1,6 @@
 const express = require("express");
 const { query } = require("../db");
-const { requireAuth, requireRole } = require("../auth");
+const { requireAuth, requireRole, agenceIdDe } = require("../auth");
 const { notify } = require("../notify");
 const { auditLog } = require("../audit");
 
@@ -53,7 +53,7 @@ router.get("/recues", requireAuth, requireRole("bailleur","intermediaire"), asyn
        JOIN users u ON u.id = d.locataire_id
        WHERE p.bailleur_id = $1
        ORDER BY d.created_at DESC`,
-      [req.user.id]
+      [agenceIdDe(req.user)]
     );
     res.json({ demandes: r.rows });
   } catch (e) { console.error(e); res.status(500).json({ error: "Erreur serveur." }); }
@@ -88,7 +88,7 @@ router.post("/:id/selectionner", requireAuth, requireRole("bailleur","intermedia
     );
     const demande = dr.rows[0];
     if (!demande) return res.status(404).json({ error: "Candidature introuvable." });
-    if (demande.bailleur_id !== req.user.id) return res.status(403).json({ error: "Cette candidature ne concerne pas vos offres." });
+    if (demande.bailleur_id !== agenceIdDe(req.user)) return res.status(403).json({ error: "Cette candidature ne concerne pas vos offres." });
 
     await query(`UPDATE demandes SET statut = 'selectionnee' WHERE id = $1`, [demande.id]);
     await query(`UPDATE offres SET statut = 'louee' WHERE id = $1`, [demande.offre_id]);
