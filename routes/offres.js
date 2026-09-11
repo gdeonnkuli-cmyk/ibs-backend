@@ -106,16 +106,17 @@ router.get("/", async (req, res) => {
   try {
     const { commune, budget_max, type, chambres, equipements, garantie_max, charges_incluses, disponibilite, tri } = req.query;
     let sql = `
-      SELECT o.id AS offre_id, o.statut, o.vues, o.created_at,
-             p.titre, p.type, p.commune, p.adresse, p.chambres, p.loyer_usd, p.description,
-             p.statut_verification, p.garantie_mois, p.charges_incluses, p.equipements, p.disponibilite, p.photos,
-             u.nom AS bailleur_nom,
-             (SELECT COALESCE(AVG(a.note),0) FROM avis a WHERE a.bailleur_id = p.bailleur_id) AS bailleur_note,
-             (SELECT COUNT(*) FROM contrats c WHERE c.bailleur_id = p.bailleur_id AND c.statut = 'signe') AS bailleur_baux_signes
-      FROM offres o
-      JOIN proprietes p ON p.id = o.propriete_id
-      JOIN users u ON u.id = p.bailleur_id
-      WHERE o.statut = 'active'
+      SELECT * FROM (
+        SELECT o.id AS offre_id, o.statut, o.vues, o.created_at,
+               p.titre, p.type, p.commune, p.adresse, p.chambres, p.loyer_usd, p.description,
+               p.statut_verification, p.garantie_mois, p.charges_incluses, p.equipements, p.disponibilite, p.photos,
+               u.nom AS bailleur_nom,
+               COALESCE((SELECT AVG(a.note) FROM avis a WHERE a.bailleur_id = p.bailleur_id), 0) AS bailleur_note,
+               (SELECT COUNT(*) FROM contrats c WHERE c.bailleur_id = p.bailleur_id AND c.statut = 'signe') AS bailleur_baux_signes
+        FROM offres o
+        JOIN proprietes p ON p.id = o.propriete_id
+        JOIN users u ON u.id = p.bailleur_id
+        WHERE o.statut = 'active'
     `;
     const params = [];
     if (commune) { params.push(commune); sql += ` AND p.commune = $${params.length}`; }
@@ -130,18 +131,19 @@ router.get("/", async (req, res) => {
       const codes = equipements.split(",").map(s => s.trim()).filter(Boolean);
       if (codes.length) { params.push(codes); sql += ` AND p.equipements @> $${params.length}::text[]`; }
     }
+    sql += ` ) resultats`;
 
     if (tri === "recent") {
-      sql += ` ORDER BY o.created_at DESC`;
+      sql += ` ORDER BY created_at DESC`;
     } else {
       // ── Pertinence : titre vérifié + volume de baux signés + note moyenne + fraîcheur de 14 jours ──
       sql += `
         ORDER BY
-          (CASE WHEN p.statut_verification = 'verifie' THEN 3 ELSE 0 END) +
+          (CASE WHEN statut_verification = 'verifie' THEN 3 ELSE 0 END) +
           (CASE WHEN bailleur_baux_signes >= 15 THEN 4 WHEN bailleur_baux_signes >= 5 THEN 3 WHEN bailleur_baux_signes >= 1 THEN 2 ELSE 0 END) +
           bailleur_note +
-          (CASE WHEN o.created_at >= NOW() - INTERVAL '14 days' THEN 1 ELSE 0 END)
-        DESC, o.created_at DESC
+          (CASE WHEN created_at >= NOW() - INTERVAL '14 days' THEN 1 ELSE 0 END)
+        DESC, created_at DESC
       `;
     }
 
