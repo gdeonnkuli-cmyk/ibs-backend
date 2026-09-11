@@ -9,6 +9,29 @@ const { auditLog } = require("../audit");
 
 const router = express.Router();
 
+// ── Renouveler un bail signé : recrée un nouveau contrat en brouillon, mêmes termes,
+//    qui repasse par le cycle normal (préparation → confirmation → signature OTP).
+//    On ne recopie jamais une signature : chaque bail doit être signé pour de vrai. ──
+router.post("/:id/renouveler", requireAuth, async (req, res) => {
+  try {
+    const old = await query(`SELECT * FROM contrats WHERE id = $1`, [req.params.id]);
+    if (!old.rows.length) return res.status(404).json({ error: "Contrat introuvable." });
+    const c = old.rows[0];
+    if (c.bailleur_id !== agenceIdDe(req.user)) return res.status(403).json({ error: "Ce contrat ne vous appartient pas." });
+    if (c.statut !== "signe") return res.status(400).json({ error: "Seul un bail signé peut être renouvelé." });
+
+    const commission = Math.round(c.loyer_usd * 0.5 * 100) / 100;
+    const r = await query(
+      `INSERT INTO contrats (offre_id, bailleur_id, locataire_id, loyer_usd, commission_usd, duree_mois, statut)
+       VALUES ($1,$2,$3,$4,$5,$6,'brouillon') RETURNING id`,
+      [c.offre_id, c.bailleur_id, c.locataire_id, c.loyer_usd, commission, c.duree_mois]
+    );
+    await auditLog(req.user.id, "bail_renouvele", { ancien_contrat_id: c.id, nouveau_contrat_id: r.rows[0].id });
+    await notify(c.locataire_id, `Votre bailleur propose de renouveler votre bail. Un nouveau contrat est en préparation.`, "in_app");
+    res.status(201).json({ message: "Renouvellement lancé — le nouveau contrat doit être préparé puis signé.", contrat_id: r.rows[0].id });
+  } catch (e) { console.error(e); res.status(500).json({ error: "Erreur serveur." }); }
+});
+
 async function getContrat(id) {
   const r = await query(
     `SELECT c.*, p.titre, p.commune, p.adresse,
