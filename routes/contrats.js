@@ -6,6 +6,7 @@ const { query } = require("../db");
 const { requireAuth, JWT_SECRET, agenceIdDe } = require("../auth");
 const { notify, generateOtp, verifyOtp } = require("../notify");
 const { auditLog } = require("../audit");
+const { appliquerFiligrane } = require("../pdfWatermark");
 
 const router = express.Router();
 
@@ -310,6 +311,8 @@ router.get("/:id/pdf", async (req, res) => {
       "Le paiement du loyer et la commission se règlent hors plateforme durant cette phase pilote (V0).",
       { width: 480 }
     );
+
+    appliquerFiligrane(doc, { nom: user.nom, telephone: user.id === contrat.bailleur_id || agenceIdDe(user) === contrat.bailleur_id ? contrat.bailleur_telephone : contrat.locataire_telephone });
 
     doc.end();
   } catch (e) {
