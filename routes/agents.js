@@ -60,4 +60,36 @@ router.post("/:id/reactiver", requireAuth, requireRole("intermediaire"), async (
   } catch (e) { console.error(e); res.status(500).json({ error: "Erreur serveur." }); }
 });
 
+// ── Rapport de performance : offres publiées / candidats sélectionnés / contrats finalisés,
+//    par agent (soi-même + sous-agents), sur les 30 derniers jours — basé sur le journal d'audit. ──
+router.get("/performance", requireAuth, requireRole("intermediaire"), async (req, res) => {
+  try {
+    if (req.user.agence_id) return res.status(403).json({ error: "Seul le compte principal peut consulter ce rapport." });
+
+    const equipe = await query(
+      `SELECT id, nom FROM users WHERE id = $1 OR agence_id = $1 ORDER BY (id = $1) DESC, nom ASC`,
+      [req.user.id]
+    );
+    const ids = equipe.rows.map(u => u.id);
+    if (!ids.length) return res.json({ equipe: [] });
+
+    const stats = await query(
+      `SELECT user_id, action, COUNT(*) AS n
+       FROM logs_audit
+       WHERE user_id = ANY($1) AND action IN ('offre_publiee','candidat_selectionne','contrat_archive')
+         AND created_at >= NOW() - INTERVAL '30 days'
+       GROUP BY user_id, action`,
+      [ids]
+    );
+    const parAgent = {};
+    ids.forEach(id => { parAgent[id] = { offres_publiees: 0, candidats_selectionnes: 0, contrats_signes: 0 }; });
+    stats.rows.forEach(row => {
+      const cle = { offre_publiee: "offres_publiees", candidat_selectionne: "candidats_selectionnes", contrat_archive: "contrats_signes" }[row.action];
+      if (cle) parAgent[row.user_id][cle] = Number(row.n);
+    });
+
+    res.json({ equipe: equipe.rows.map(u => ({ id: u.id, nom: u.nom, ...parAgent[u.id] })) });
+  } catch (e) { console.error(e); res.status(500).json({ error: "Erreur serveur." }); }
+});
+
 module.exports = router;
