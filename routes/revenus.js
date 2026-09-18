@@ -3,7 +3,7 @@ const PDFDocument = require("pdfkit");
 const jwt = require("jsonwebtoken");
 const { query } = require("../db");
 const { requireAuth, requireRole, JWT_SECRET, agenceIdDe } = require("../auth");
-const { appliquerFiligrane } = require("../pdfWatermark");
+const { appliquerFiligrane } = require("../pdfwatermark");
 
 const router = express.Router();
 

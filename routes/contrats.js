@@ -6,7 +6,7 @@ const { query } = require("../db");
 const { requireAuth, JWT_SECRET, agenceIdDe } = require("../auth");
 const { notify, generateOtp, verifyOtp } = require("../notify");
 const { auditLog } = require("../audit");
-const { appliquerFiligrane } = require("../pdfWatermark");
+const { appliquerFiligrane } = require("../pdfwatermark");
 
 const router = express.Router();
 

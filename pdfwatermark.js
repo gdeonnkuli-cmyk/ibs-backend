@@ -1,4 +1,4 @@
-// pdfWatermark.js — Filigrane traçable pour les documents PDF sensibles.
+// pdfwatermark.js — Filigrane traçable pour les documents PDF sensibles.
 // N'empêche pas la capture ou le partage (impossible à garantir pour un PDF téléchargé),
 // mais identifie clairement qui a généré le document et quand — utile en cas de fuite.
 function appliquerFiligrane(doc, { nom, telephone }) {
