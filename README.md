@@ -58,6 +58,8 @@ Ce script rejoue tout le parcours V0 : inscription bailleur + locataire → vér
 |---|---|---|
 | POST | `/api/auth/register` | Inscription (CNI recto/verso obligatoires) |
 | POST | `/api/auth/verify-phone` | Vérification du téléphone par OTP |
+| POST | `/api/auth/forgot-password` | Demande d'un code de réinitialisation par SMS |
+| POST | `/api/auth/reset-password` | Nouveau mot de passe (téléphone + code + mot de passe) |
 | POST | `/api/auth/login` | Connexion |
 | GET  | `/api/auth/admin/cni-pending` | CNI en attente de vérification (admin) |
 | POST | `/api/auth/admin/cni-review/:id` | Valider/rejeter une CNI (admin) |
@@ -95,6 +97,38 @@ avoir fourni une pièce d'identité.
 Tant que `CLOUDINARY_*` n'est pas renseigné, le stockage est inactif :
 `/api/uploads/signature` rend 503 et les URLs sont acceptées telles quelles.
 C'est le mode de développement — à ne pas laisser en production.
+
+## Plafonds d'appel
+
+Chaque code envoyé est un SMS facturé : sans plafond, une boucle sur
+`/resend-otp` vide le crédit Africa's Talking. Et un code à 6 chiffres comme un
+mot de passe se devinent si l'on peut essayer sans fin.
+
+| Route | Plafond | Clé |
+|---|---|---|
+| `/register`, `/resend-otp`, `/forgot-password` | 5 / 15 min | téléphone |
+| `/verify-phone`, `/reset-password` | 10 codes erronés / 15 min | téléphone |
+| `/login` | 10 échecs / 15 min | téléphone |
+| `/login` | 30 échecs / 15 min | adresse IP |
+| `/uploads/signature` (dossier `cni`) | 20 / 10 min | adresse IP |
+
+Une connexion réussie remet le compteur du numéro à zéro : un utilisateur
+légitime ne se bloque pas après quelques fautes de frappe.
+
+Les compteurs vivent dans le processus : ils repartent à zéro au redéploiement
+et ne sont pas partagés entre instances. Suffisant pour freiner un script sur
+un conteneur unique ; le jour où l'API tourne sur plusieurs instances, il
+faudra les déporter (Redis ou une table).
+
+`/resend-otp` et `/forgot-password` répondent la même chose que le numéro soit
+inscrit ou non — sans quoi il suffisait de les interroger pour dresser la liste
+des numéros présents sur IBS.
+
+**Limite connue :** les jetons JWT sont valables 30 jours et ne sont pas
+révocables. Réinitialiser un mot de passe ne déconnecte donc pas une session
+déjà ouverte ailleurs. Suffisant contre l'oubli, insuffisant contre un compte
+compromis — il faudrait dater les changements de mot de passe et rejeter les
+jetons antérieurs.
 
 ## Ce qui n'est volontairement PAS dans ce V0
 

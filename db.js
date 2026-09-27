@@ -359,6 +359,51 @@ async function migrate() {
   `);
   console.log("✅ Table visites prête.");
 
+  // ── Index ──────────────────────────────────────────────────────────────
+  // Créés en dernier : certains portent sur des colonnes ajoutées par les
+  // migrations ci-dessus. PostgreSQL indexe déjà les clés primaires et les
+  // contraintes UNIQUE (users.telephone, favoris(locataire_id, offre_id)…) —
+  // inutile de les redoubler. Ne restent que les colonnes sur lesquelles les
+  // routes filtrent et joignent.
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_users_agence ON users(agence_id);
+    CREATE INDEX IF NOT EXISTS idx_users_cni_statut ON users(cni_statut);
+
+    CREATE INDEX IF NOT EXISTS idx_otp_recherche ON otp_codes(telephone, contexte, id DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_proprietes_bailleur ON proprietes(bailleur_id);
+    CREATE INDEX IF NOT EXISTS idx_proprietes_commune ON proprietes(commune);
+    CREATE INDEX IF NOT EXISTS idx_proprietes_verif ON proprietes(statut_verification);
+
+    CREATE INDEX IF NOT EXISTS idx_offres_propriete ON offres(propriete_id);
+    CREATE INDEX IF NOT EXISTS idx_offres_statut ON offres(statut);
+
+    CREATE INDEX IF NOT EXISTS idx_demandes_offre ON demandes(offre_id);
+    CREATE INDEX IF NOT EXISTS idx_demandes_locataire ON demandes(locataire_id);
+
+    CREATE INDEX IF NOT EXISTS idx_contrats_bailleur ON contrats(bailleur_id);
+    CREATE INDEX IF NOT EXISTS idx_contrats_locataire ON contrats(locataire_id);
+    CREATE INDEX IF NOT EXISTS idx_contrats_offre ON contrats(offre_id);
+    CREATE INDEX IF NOT EXISTS idx_contrats_statut ON contrats(statut);
+
+    CREATE INDEX IF NOT EXISTS idx_paiements_contrat ON paiements_loyer(contrat_id);
+    CREATE INDEX IF NOT EXISTS idx_documents_contrat ON documents(contrat_id);
+
+    CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, lu);
+    CREATE INDEX IF NOT EXISTS idx_messages_fil ON messages(offre_id, locataire_id);
+    CREATE INDEX IF NOT EXISTS idx_avis_bailleur ON avis(bailleur_id);
+    CREATE INDEX IF NOT EXISTS idx_alertes_matching ON alertes(commune, actif);
+    CREATE INDEX IF NOT EXISTS idx_abonnements_bailleur ON abonnements(bailleur_id);
+    CREATE INDEX IF NOT EXISTS idx_mandants_intermediaire ON mandants(intermediaire_id);
+    CREATE INDEX IF NOT EXISTS idx_visites_offre ON visites(offre_id);
+    CREATE INDEX IF NOT EXISTS idx_visites_locataire ON visites(locataire_id);
+    CREATE INDEX IF NOT EXISTS idx_signalements_statut ON signalements(statut);
+    CREATE INDEX IF NOT EXISTS idx_avis_quartier_commune ON avis_quartier(commune);
+    CREATE INDEX IF NOT EXISTS idx_audit_user ON logs_audit(user_id, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_premium_bailleur ON abonnements_premium(bailleur_id);
+  `);
+  console.log("✅ Index prêts.");
+
   await ensureAdmin();
 }
 

@@ -71,7 +71,10 @@ async function generateOtp(telephone, contexte = "connexion", contratId = null) 
     `INSERT INTO otp_codes (telephone, code, contexte, contrat_id, expires_at) VALUES ($1, $2, $3, $4, $5)`,
     [telephone, code, contexte, contratId, expiresAt]
   );
-  const label = contexte === "signature" ? "Code de signature IBS" : "Code de vérification IBS";
+  const label =
+    contexte === "signature" ? "Code de signature IBS"
+    : contexte === "reinitialisation" ? "Code de réinitialisation IBS"
+    : "Code de vérification IBS";
   await sendSms(telephone, `${label} : ${code} (valide 5 minutes)`);
   // Le code ne doit jamais apparaître dans les logs de production : ils sont
   // consultables dans le tableau de bord de l'hébergeur.
