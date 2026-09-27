@@ -3,10 +3,22 @@ const jwt = require("jsonwebtoken");
 const { query } = require("../db");
 const { requireAuth, requireRole, JWT_SECRET, agenceIdDe } = require("../auth");
 const { auditLog } = require("../audit");
+const { urlDeStockageValide, MESSAGE_URL_INVALIDE } = require("../storage");
 const { statsBailleur, computeConfiance } = require("./abonnements");
 const { notify } = require("../notify");
 
 const router = express.Router();
+
+/**
+ * Les documents d'une offre doivent provenir de notre espace de stockage, au
+ * même titre que les CNI : un titre de propriété pointant vers une URL
+ * arbitraire ne prouve rien.
+ */
+function documentsOffreInvalides({ titre_propriete_url, photos }) {
+  if (titre_propriete_url && !urlDeStockageValide(titre_propriete_url)) return true;
+  if (Array.isArray(photos) && photos.some((url) => !urlDeStockageValide(url))) return true;
+  return false;
+}
 
 // ── Prix marché : moyenne des loyers actifs dans une commune (± le type de bien) ──
 async function calculerPrixMarche(commune, type) {
@@ -39,6 +51,9 @@ router.post("/", requireAuth, requireRole("bailleur","intermediaire"), async (re
             garantie_mois, charges_incluses, equipements, disponibilite, photos, mandant_id } = req.body;
     if (!titre || !type || !commune || !loyer_usd) {
       return res.status(400).json({ error: "Titre, type, commune et loyer sont requis." });
+    }
+    if (documentsOffreInvalides({ titre_propriete_url, photos })) {
+      return res.status(400).json({ error: MESSAGE_URL_INVALIDE });
     }
     const dispoOk = ["immediat", "sous_7j", "sous_30j"].includes(disponibilite) ? disponibilite : "immediat";
     const agenceId = agenceIdDe(req.user);
@@ -253,6 +268,9 @@ router.patch("/:id", requireAuth, requireRole("bailleur","intermediaire"), async
 
     const { titre, commune, adresse, chambres, loyer_usd, description,
             garantie_mois, charges_incluses, equipements, disponibilite, photos, mandant_id } = req.body;
+    if (documentsOffreInvalides({ photos })) {
+      return res.status(400).json({ error: MESSAGE_URL_INVALIDE });
+    }
     const dispoOk = ["immediat", "sous_7j", "sous_30j"].includes(disponibilite) ? disponibilite : "immediat";
 
     let mandantIdOk = null;

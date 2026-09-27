@@ -4,6 +4,7 @@ const { query } = require("../db");
 const { signToken, requireAuth, requireRole } = require("../auth");
 const { notify, generateOtp, verifyOtp, getLastOtp } = require("../notify");
 const { auditLog } = require("../audit");
+const { urlDeStockageValide, MESSAGE_URL_INVALIDE } = require("../storage");
 
 const router = express.Router();
 
@@ -20,6 +21,9 @@ router.post("/register", async (req, res) => {
     }
     if (!cni_recto_url || !cni_verso_url) {
       return res.status(400).json({ error: "La CNI (recto et verso) est obligatoire pour s'inscrire sur IBS." });
+    }
+    if (!urlDeStockageValide(cni_recto_url) || !urlDeStockageValide(cni_verso_url)) {
+      return res.status(400).json({ error: MESSAGE_URL_INVALIDE });
     }
     if (role === "intermediaire" && !agrement_ou_rccm) {
       return res.status(400).json({ error: "Le numéro d'agrément ou de RCCM est obligatoire pour un compte Intermédiaire/Agence." });

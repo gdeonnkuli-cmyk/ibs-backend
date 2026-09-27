@@ -70,14 +70,40 @@ Ce script rejoue tout le parcours V0 : inscription bailleur + locataire → vér
 | POST | `/api/contrats/:id/signer` | Signature électronique OTP (par partie) |
 | GET  | `/api/admin/stats` | Entonnoir d'adoption (comptes → offres → candidatures → contrats signés) |
 
+## Pièces justificatives (CNI, titres, photos)
+
+Les fichiers ne transitent pas par l'API : le client demande une signature, puis
+téléverse directement chez Cloudinary.
+
+```
+POST /api/uploads/signature   { "dossier": "cni" | "titres" | "photos" }
+  → { cloud_name, api_key, timestamp, folder, signature, upload_url }
+```
+
+Le client POST ensuite le fichier sur `upload_url` en multipart avec ces champs,
+et conserve le `secure_url` renvoyé : c'est lui qu'il transmet à l'API dans
+`cni_recto_url`, `titre_propriete_url`, `photos[]`.
+
+`dossier: "cni"` est accessible sans jeton — à l'inscription le compte n'existe
+pas encore — mais limité à 20 demandes par IP et par tranche de 10 minutes.
+`titres` et `photos` exigent un jeton.
+
+Les URLs enregistrées sont vérifiées : elles doivent pointer vers le cloud
+configuré. Sans cela, n'importe qui déclare une URL quelconque et passe pour
+avoir fourni une pièce d'identité.
+
+Tant que `CLOUDINARY_*` n'est pas renseigné, le stockage est inactif :
+`/api/uploads/signature` rend 503 et les URLs sont acceptées telles quelles.
+C'est le mode de développement — à ne pas laisser en production.
+
 ## Ce qui n'est volontairement PAS dans ce V0
 
 Conforme à *IBS_Spec_V0_Publique.docx* : pas d'intégration Flutterwave/Mobile Money in-app, pas de RCCM/IDNAT/NIF, pas de cartographie, pas de service déménagement, pas de médiation formalisée. Le champ `reception_loyer` sur le contrat sert de solution transitoire (le loyer et la commission se règlent hors plateforme pour l'instant).
 
 ## Prochaines étapes techniques
 
-1. Brancher une vraie passerelle SMS (Africa's Talking, Twilio) dans `notify.js` — un seul fichier à modifier
-2. Brancher un stockage de fichiers réel (S3, Cloudinary) pour les CNI et titres de propriété (actuellement juste des URLs)
-3. Générer un vrai PDF du contrat signé (DomPDF, Puppeteer) au lieu du stub dans `contrats.js`
+1. ~~Brancher une vraie passerelle SMS~~ — fait : Africa's Talking dans `notify.js` (repli en mode simulé sans clés)
+2. ~~Brancher un stockage de fichiers réel~~ — fait : Cloudinary en upload signé direct (voir plus haut)
+3. ~~Générer un vrai PDF du contrat signé~~ — fait : pdfkit dans `contrats.js`, avec filigrane traçable
 4. Migrer PostgreSQL en Phase 1 vers une instance managée dédiée (hors Railway) si le volume le justifie
 5. Brancher le frontend (les prototypes HTML `IBS_App_Smartphone.html` / `IBS_App_PC.html`) sur cette API à la place des données simulées en JS
