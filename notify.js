@@ -15,7 +15,14 @@ const AT_BASE_URL = AT_SANDBOX
 
 async function sendSms(telephone, message) {
   if (!AT_API_KEY || !AT_USERNAME) {
-    console.log(`[SMS-SIMULÉ · pas de passerelle configurée] → ${telephone} : ${message}`);
+    // Le message contient les codes OTP : on ne le journalise qu'en mode test.
+    // En production, une passerelle non configurée est une anomalie à signaler,
+    // pas une invitation à écrire les codes dans les logs de l'hébergeur.
+    if (process.env.DEV_MODE === "true") {
+      console.log(`[SMS-SIMULÉ · pas de passerelle configurée] → ${telephone} : ${message}`);
+    } else {
+      console.warn(`[SMS NON ENVOYÉ] passerelle Africa's Talking non configurée (AT_USERNAME / AT_API_KEY) → ${telephone}`);
+    }
     return;
   }
   try {
@@ -66,7 +73,13 @@ async function generateOtp(telephone, contexte = "connexion", contratId = null) 
   );
   const label = contexte === "signature" ? "Code de signature IBS" : "Code de vérification IBS";
   await sendSms(telephone, `${label} : ${code} (valide 5 minutes)`);
-  console.log(`[OTP] → ${telephone} (${contexte}) : ${code} (valide 5 min)`);
+  // Le code ne doit jamais apparaître dans les logs de production : ils sont
+  // consultables dans le tableau de bord de l'hébergeur.
+  if (process.env.DEV_MODE === "true") {
+    console.log(`[OTP] → ${telephone} (${contexte}) : ${code} (valide 5 min)`);
+  } else {
+    console.log(`[OTP] généré → ${telephone} (${contexte}), valide 5 min`);
+  }
   return code;
 }
 

@@ -3,7 +3,13 @@
 // Ne pas confondre avec routes/auth.js (les endpoints d'inscription/connexion).
 const jwt = require("jsonwebtoken");
 
-const JWT_SECRET = process.env.JWT_SECRET || "changeme_dev_secret";
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  // Pas de valeur de repli : un secret par défaut publié dans le dépôt permettrait
+  // à n'importe qui de forger un jeton admin. Mieux vaut refuser de démarrer.
+  console.error("JWT_SECRET absente — refus de démarrer. Voir .env.example.");
+  process.exit(1);
+}
 
 function signToken(user) {
   return jwt.sign({ id: user.id, role: user.role, nom: user.nom, agence_id: user.agence_id || null }, JWT_SECRET, { expiresIn: "30d" });

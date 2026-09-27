@@ -147,7 +147,7 @@ router.post("/admin/cni-review/:id", requireAuth, requireRole("admin"), async (r
 // ── MODE TEST — à retirer dès qu'une vraie passerelle SMS est branchée ──
 router.get("/dev/last-otp", async (req, res) => {
   try {
-    if (process.env.DEV_MODE === "false") return res.status(404).json({ error: "Mode test désactivé." });
+    if (process.env.DEV_MODE !== "true") return res.status(404).json({ error: "Mode test désactivé." });
     const { telephone, contexte } = req.query;
     if (!telephone) return res.status(400).json({ error: "Téléphone requis." });
     const code = await getLastOtp(telephone, contexte || "connexion");
