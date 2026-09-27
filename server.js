@@ -2,6 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const { migrate } = require("./db");
+const { demarrerPlanificateur } = require("./rappels");
 
 const app = express();
 app.use(cors());
@@ -39,6 +40,7 @@ app.use("/api/comptes", require("./routes/comptes"));
 app.use("/api/audit", require("./routes/audit"));
 app.use("/api/resume", require("./routes/resume"));
 app.use("/api/uploads", require("./routes/uploads"));
+app.use("/api/rappels", require("./routes/rappels"));
 
 app.use((req, res) => res.status(404).json({ error: "Route introuvable." }));
 app.use((err, req, res, next) => {
@@ -51,6 +53,7 @@ const PORT = process.env.PORT || 3000;
 async function start() {
   await migrate();
   app.listen(PORT, () => console.log(`IBS API en écoute sur http://localhost:${PORT}`));
+  demarrerPlanificateur();
 }
 
 if (require.main === module) {

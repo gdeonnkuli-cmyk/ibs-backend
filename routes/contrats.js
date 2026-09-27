@@ -81,28 +81,19 @@ router.get("/", requireAuth, async (req, res) => {
       [filterId]
     );
 
-    // ── Rappel de fin de bail : calcul + notification throttlée (1 fois max tous les 7 jours) ──
-    const contrats = [];
-    for (const c of r.rows) {
+    // Le calcul sert l'affichage. L'envoi du rappel, lui, appartient au
+    // planificateur (rappels.js) : accroché ici, il ne partait que si
+    // quelqu'un ouvrait cet écran, et par notification in-app seulement.
+    const contrats = r.rows.map((c) => {
       let date_fin = null, jours_restants = null;
       if (c.statut === "signe" && c.signed_at) {
         const fin = new Date(c.signed_at);
         fin.setMonth(fin.getMonth() + c.duree_mois);
         date_fin = fin.toISOString().slice(0, 10);
         jours_restants = Math.ceil((fin - new Date()) / (1000 * 60 * 60 * 24));
-
-        if (jours_restants >= 0 && jours_restants <= 30) {
-          const dejaRappele = c.dernier_rappel_echeance &&
-            (Date.now() - new Date(c.dernier_rappel_echeance).getTime()) < 7 * 24 * 60 * 60 * 1000;
-          if (!dejaRappele) {
-            await notify(c.bailleur_id, `Le bail "${c.titre}" se termine dans ${jours_restants} jour(s) (${date_fin}).`, "in_app");
-            await notify(c.locataire_id, `Votre bail "${c.titre}" se termine dans ${jours_restants} jour(s) (${date_fin}).`, "in_app");
-            await query(`UPDATE contrats SET dernier_rappel_echeance = NOW() WHERE id = $1`, [c.id]);
-          }
-        }
       }
-      contrats.push({ ...c, date_fin, jours_restants });
-    }
+      return { ...c, date_fin, jours_restants };
+    });
     res.json({ contrats });
   } catch (e) { console.error(e); res.status(500).json({ error: "Erreur serveur." }); }
 });

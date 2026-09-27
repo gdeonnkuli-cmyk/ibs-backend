@@ -60,6 +60,7 @@ Ce script rejoue tout le parcours V0 : inscription bailleur + locataire → vér
 | POST | `/api/auth/verify-phone` | Vérification du téléphone par OTP |
 | POST | `/api/auth/forgot-password` | Demande d'un code de réinitialisation par SMS |
 | POST | `/api/auth/reset-password` | Nouveau mot de passe (téléphone + code + mot de passe) |
+| POST | `/api/rappels/executer` | Déclencher un tour de rappels immédiatement (admin) |
 | POST | `/api/auth/login` | Connexion |
 | GET  | `/api/auth/admin/cni-pending` | CNI en attente de vérification (admin) |
 | POST | `/api/auth/admin/cni-review/:id` | Valider/rejeter une CNI (admin) |
@@ -129,6 +130,29 @@ révocables. Réinitialiser un mot de passe ne déconnecte donc pas une session
 déjà ouverte ailleurs. Suffisant contre l'oubli, insuffisant contre un compte
 compromis — il faudrait dater les changements de mot de passe et rejeter les
 jetons antérieurs.
+
+## Rappels automatiques
+
+`rappels.js` passe deux fois par jour et notifie par SMS :
+
+| Rappel | Déclenchement | Destinataires |
+|---|---|---|
+| Fin de bail | bail signé arrivant à échéance sous 30 jours | bailleur + locataire |
+| Loyer en retard | mois échus sans ligne dans `paiements_loyer` | locataire + bailleur |
+
+Au plus un rappel par semaine et par contrat. Le jalon est posé par un `UPDATE`
+conditionnel qui ne touche la ligne que si le délai est écoulé : deux instances
+qui passent en même temps ne produisent donc pas deux SMS.
+
+**Un bail dont aucun paiement n'a jamais été déclaré n'est jamais relancé.**
+En V0 le loyer se règle hors plateforme : un carnet vide veut dire « carnet non
+tenu », pas « rien n'a été payé ». Sans cette réserve, on réclamerait par SMS des
+mois déjà réglés. Seuls les baux dont le carnet est effectivement utilisé sont
+relancés.
+
+Le planificateur ne s'arme pas quand `DEV_MODE=true`, et `RAPPELS_AUTO=false` le
+coupe en production. `POST /api/rappels/executer` (admin) déclenche un tour
+immédiat sans attendre les 12 heures — le throttle s'y applique de la même façon.
 
 ## Ce qui n'est volontairement PAS dans ce V0
 

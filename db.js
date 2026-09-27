@@ -240,6 +240,7 @@ async function migrate() {
   // ── Migration : rappel de fin de bail (anti-spam : un rappel max tous les 7 jours) ──
   await pool.query(`
     ALTER TABLE contrats ADD COLUMN IF NOT EXISTS dernier_rappel_echeance TIMESTAMPTZ;
+    ALTER TABLE contrats ADD COLUMN IF NOT EXISTS dernier_rappel_impaye TIMESTAMPTZ;
   `);
   console.log("✅ Champ rappel de fin de bail disponible sur les contrats.");
 
