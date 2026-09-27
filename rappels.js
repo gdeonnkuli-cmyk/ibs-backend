@@ -21,16 +21,26 @@ const INTERVALLE_MS = 12 * 60 * 60 * 1000;
 /**
  * Pose le jalon de manière atomique. Rend true seulement si c'est cet appel qui
  * l'a posé — donc à lui d'envoyer.
+ *
+ * En simulation, la même condition est évaluée en lecture seule : le tour dit
+ * ce qui partirait sans rien écrire, et le throttle reste intact pour le vrai
+ * tour qui suivra.
  */
-async function reserverRappel(contratId, colonne) {
-  const r = await query(
-    `UPDATE contrats SET ${colonne} = NOW()
-     WHERE id = $1
-       AND (${colonne} IS NULL OR ${colonne} < NOW() - INTERVAL '${DELAI_RELANCE_JOURS} days')
-     RETURNING id`,
-    [contratId]
-  );
+async function reserverRappel(contratId, colonne, simulation) {
+  const condition = `(${colonne} IS NULL OR ${colonne} < NOW() - INTERVAL '${DELAI_RELANCE_JOURS} days')`;
+  const r = simulation
+    ? await query(`SELECT id FROM contrats WHERE id = $1 AND ${condition}`, [contratId])
+    : await query(
+        `UPDATE contrats SET ${colonne} = NOW() WHERE id = $1 AND ${condition} RETURNING id`,
+        [contratId]
+      );
   return r.rows.length > 0;
+}
+
+/** N'envoie que hors simulation ; dans les deux cas, consigne le message. */
+async function envoyer(journal, userId, message, simulation) {
+  journal.push({ destinataire: userId, message });
+  if (!simulation) await notify(userId, message, "sms");
 }
 
 function dateFinDeBail(contrat) {
@@ -40,7 +50,7 @@ function dateFinDeBail(contrat) {
 }
 
 // ── Baux arrivant à échéance ──────────────────────────────────────────────
-async function rappelsFinDeBail() {
+async function rappelsFinDeBail({ simulation = false, journal = [] } = {}) {
   const r = await query(
     `SELECT c.id, c.bailleur_id, c.locataire_id, c.signed_at, c.duree_mois, p.titre
      FROM contrats c
@@ -54,11 +64,11 @@ async function rappelsFinDeBail() {
     const fin = dateFinDeBail(c);
     const joursRestants = Math.ceil((fin - new Date()) / (1000 * 60 * 60 * 24));
     if (joursRestants < 0 || joursRestants > JOURS_AVANT_FIN) continue;
-    if (!(await reserverRappel(c.id, "dernier_rappel_echeance"))) continue;
+    if (!(await reserverRappel(c.id, "dernier_rappel_echeance", simulation))) continue;
 
     const dateFin = fin.toISOString().slice(0, 10);
-    await notify(c.bailleur_id, `IBS : le bail "${c.titre}" se termine dans ${joursRestants} jour(s), le ${dateFin}. Pensez au renouvellement ou au préavis.`, "sms");
-    await notify(c.locataire_id, `IBS : votre bail "${c.titre}" se termine dans ${joursRestants} jour(s), le ${dateFin}. Rapprochez-vous de votre bailleur.`, "sms");
+    await envoyer(journal, c.bailleur_id, `IBS : le bail "${c.titre}" se termine dans ${joursRestants} jour(s), le ${dateFin}. Pensez au renouvellement ou au préavis.`, simulation);
+    await envoyer(journal, c.locataire_id, `IBS : votre bail "${c.titre}" se termine dans ${joursRestants} jour(s), le ${dateFin}. Rapprochez-vous de votre bailleur.`, simulation);
     envoyes += 1;
   }
   return envoyes;
@@ -67,7 +77,7 @@ async function rappelsFinDeBail() {
 // ── Loyers échus non déclarés payés ───────────────────────────────────────
 // Un mois sans ligne dans paiements_loyer est un mois non payé : on compte les
 // mois échus du bail qui n'ont pas leur ligne.
-async function rappelsLoyerEnRetard() {
+async function rappelsLoyerEnRetard({ simulation = false, journal = [] } = {}) {
   const r = await query(
     `SELECT c.id, c.bailleur_id, c.locataire_id, c.signed_at, c.created_at,
             c.duree_mois, c.loyer_usd, p.titre,
@@ -102,30 +112,37 @@ async function rappelsLoyerEnRetard() {
     // — le loyer se règle encore de la main à la main en V0. On ne relance
     // donc que les baux dont le carnet est effectivement utilisé.
     if (Number(c.nb_payes) === 0) continue;
-    if (!(await reserverRappel(c.id, "dernier_rappel_impaye"))) continue;
+    if (!(await reserverRappel(c.id, "dernier_rappel_impaye", simulation))) continue;
 
     const somme = (enRetard * Number(c.loyer_usd)).toFixed(0);
     const pluriel = enRetard > 1 ? "s" : "";
-    await notify(c.locataire_id, `IBS : ${enRetard} mois de loyer non réglé${pluriel} pour "${c.titre}" (environ ${somme} USD). Régularisez auprès de votre bailleur.`, "sms");
-    await notify(c.bailleur_id, `IBS : ${enRetard} mois de loyer non réglé${pluriel} sur le bail "${c.titre}" (environ ${somme} USD).`, "sms");
+    await envoyer(journal, c.locataire_id, `IBS : ${enRetard} mois de loyer non réglé${pluriel} pour "${c.titre}" (environ ${somme} USD). Régularisez auprès de votre bailleur.`, simulation);
+    await envoyer(journal, c.bailleur_id, `IBS : ${enRetard} mois de loyer non réglé${pluriel} sur le bail "${c.titre}" (environ ${somme} USD).`, simulation);
     envoyes += 1;
   }
   return envoyes;
 }
 
-async function passerUnTour() {
+/**
+ * @param {boolean} simulation — n'envoie rien, ne pose aucun jalon, et rend la
+ *   liste exacte des messages qui partiraient. Sert à vérifier l'effet d'un
+ *   premier tour en production avant de dépenser des SMS.
+ */
+async function passerUnTour({ simulation = false } = {}) {
   try {
-    const fins = await rappelsFinDeBail();
-    const retards = await rappelsLoyerEnRetard();
+    const journal = [];
+    const fins = await rappelsFinDeBail({ simulation, journal });
+    const retards = await rappelsLoyerEnRetard({ simulation, journal });
     if (fins || retards) {
-      console.log(`[RAPPELS] ${fins} fin(s) de bail, ${retards} retard(s) de loyer signalés.`);
+      const prefixe = simulation ? "[RAPPELS·SIMULATION]" : "[RAPPELS]";
+      console.log(`${prefixe} ${fins} fin(s) de bail, ${retards} retard(s) de loyer${simulation ? " (rien envoyé)" : " signalés"}.`);
     }
-    return { fins, retards };
+    return { fins, retards, messages: journal, simulation };
   } catch (e) {
     // Un échec ne doit jamais arrêter le planificateur : le tour suivant
     // réessaiera, et le throttle n'a pas été posé pour les envois manqués.
     console.error("[RAPPELS] Tour en échec :", e.message);
-    return { fins: 0, retards: 0 };
+    return { fins: 0, retards: 0, messages: [], erreur: e.message };
   }
 }
 

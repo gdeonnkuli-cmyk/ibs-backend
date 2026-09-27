@@ -60,7 +60,7 @@ Ce script rejoue tout le parcours V0 : inscription bailleur + locataire → vér
 | POST | `/api/auth/verify-phone` | Vérification du téléphone par OTP |
 | POST | `/api/auth/forgot-password` | Demande d'un code de réinitialisation par SMS |
 | POST | `/api/auth/reset-password` | Nouveau mot de passe (téléphone + code + mot de passe) |
-| POST | `/api/rappels/executer` | Déclencher un tour de rappels immédiatement (admin) |
+| POST | `/api/rappels/executer[?simulation=true]` | Tour de rappels immédiat, réel ou à blanc (admin) |
 | POST | `/api/auth/login` | Connexion |
 | GET  | `/api/auth/admin/cni-pending` | CNI en attente de vérification (admin) |
 | POST | `/api/auth/admin/cni-review/:id` | Valider/rejeter une CNI (admin) |
@@ -153,6 +153,27 @@ relancés.
 Le planificateur ne s'arme pas quand `DEV_MODE=true`, et `RAPPELS_AUTO=false` le
 coupe en production. `POST /api/rappels/executer` (admin) déclenche un tour
 immédiat sans attendre les 12 heures — le throttle s'y applique de la même façon.
+
+### Simulation
+
+`POST /api/rappels/executer?simulation=true` rend la liste exacte des SMS qui
+partiraient, avec leur destinataire et leur texte, **sans en envoyer un seul et
+sans poser de jalon** : le vrai tour qui suit enverra tout. À passer avant la
+première mise en service, pour voir ce que recevraient les utilisateurs et
+mesurer le coût en SMS.
+
+```json
+{
+  "simulation": true,
+  "fins_de_bail_signalees": 1,
+  "retards_de_loyer_signales": 1,
+  "sms": 4,
+  "apercu": [{ "destinataire": 2, "message": "IBS : le bail …" }]
+}
+```
+
+Déploiement prudent : `RAPPELS_AUTO=false`, simulation, lecture de l'aperçu,
+puis passage à `true`.
 
 ## Ce qui n'est volontairement PAS dans ce V0
 

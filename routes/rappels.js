@@ -11,12 +11,21 @@ const router = express.Router();
 // s'applique de la même façon ici, un appel répété n'envoie donc rien de plus.
 router.post("/executer", requireAuth, requireRole("admin"), async (req, res) => {
   try {
-    const { fins, retards } = await passerUnTour();
-    await auditLog(req.user.id, "rappels_executes", { fins, retards });
+    // ?simulation=true : rend la liste exacte des SMS qui partiraient, sans en
+    // envoyer un seul et sans consommer le throttle. À passer avant le premier
+    // vrai tour, pour voir ce que recevraient les utilisateurs.
+    const simulation = req.query.simulation === "true";
+    const { fins, retards, messages } = await passerUnTour({ simulation });
+    await auditLog(req.user.id, simulation ? "rappels_simules" : "rappels_executes", { fins, retards });
     res.json({
-      message: "Tour de rappels terminé.",
+      message: simulation
+        ? "Simulation terminée — aucun SMS envoyé, aucun compteur consommé."
+        : "Tour de rappels terminé.",
+      simulation,
       fins_de_bail_signalees: fins,
       retards_de_loyer_signales: retards,
+      sms: messages.length,
+      ...(simulation ? { apercu: messages } : {}),
     });
   } catch (e) { console.error(e); res.status(500).json({ error: "Erreur serveur." }); }
 });
