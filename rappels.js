@@ -91,14 +91,17 @@ async function rappelsFinDeBail({ simulation = false, journal = [] } = {}) {
 }
 
 // ── Loyers échus non déclarés payés ───────────────────────────────────────
-// Un mois sans ligne dans paiements_loyer est un mois non payé : on compte les
-// mois échus du bail qui n'ont pas leur ligne.
+// On ne relance que les mois échus sans aucune ligne dans paiements_loyer.
+// Un mois en attente de confirmation ou contesté en a une : les parties s'en
+// occupent déjà et ont été notifiées à ce titre — le relancer serait du bruit.
 async function rappelsLoyerEnRetard({ simulation = false, journal = [] } = {}) {
   const r = await query(
     `SELECT c.id, c.signed_at, c.created_at, c.duree_mois, c.loyer_usd, p.titre,
             ub.id AS bailleur_id, ub.nom AS bailleur_nom, ub.telephone AS bailleur_tel,
             ul.id AS locataire_id, ul.nom AS locataire_nom, ul.telephone AS locataire_tel,
-            (SELECT count(*) FROM paiements_loyer pl WHERE pl.contrat_id = c.id) AS nb_payes
+            (SELECT count(*) FROM paiements_loyer pl
+             WHERE pl.contrat_id = c.id AND pl.mois < date_trunc('month', NOW())) AS nb_traites,
+            (SELECT count(*) FROM paiements_loyer pl WHERE pl.contrat_id = c.id) AS nb_lignes
      FROM contrats c
      JOIN offres o ON o.id = c.offre_id
      JOIN proprietes p ON p.id = o.propriete_id
@@ -122,7 +125,9 @@ async function rappelsLoyerEnRetard({ simulation = false, journal = [] } = {}) {
       (debutDuMois.getFullYear() - debut.getFullYear()) * 12 + (debutDuMois.getMonth() - debut.getMonth())
     );
     const moisEchus = Math.min(moisEcoules, c.duree_mois);
-    const enRetard = moisEchus - Number(c.nb_payes);
+    // Seules les lignes des mois ÉCHUS entrent dans le compte : sinon un mois
+    // payé d'avance masquerait un mois antérieur resté impayé.
+    const enRetard = moisEchus - Number(c.nb_traites);
     if (enRetard <= 0) continue;
 
     // Aucun paiement jamais déclaré sur ce bail : le carnet de loyer n'y est
@@ -130,7 +135,7 @@ async function rappelsLoyerEnRetard({ simulation = false, journal = [] } = {}) {
     // et relancer reviendrait à réclamer des mois déjà réglés hors plateforme
     // — le loyer se règle encore de la main à la main en V0. On ne relance
     // donc que les baux dont le carnet est effectivement utilisé.
-    if (Number(c.nb_payes) === 0) continue;
+    if (Number(c.nb_lignes) === 0) continue;
     if (!(await reserverRappel(c.id, "dernier_rappel_impaye", simulation))) continue;
 
     const somme = (enRetard * Number(c.loyer_usd)).toFixed(0);

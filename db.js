@@ -360,6 +360,24 @@ async function migrate() {
   `);
   console.log("✅ Table visites prête.");
 
+  // ── Migration : validation des paiements par les deux parties ──
+  // Un mois déclaré par le locataire ne vaut plus quittance à lui seul : il
+  // attend la confirmation du bailleur. Les lignes créées avant cette
+  // migration passent en "confirme" — elles ont été déclarées sous l'ancien
+  // régime et il serait faux de les remettre rétroactivement en cause.
+  await pool.query(`
+    ALTER TABLE paiements_loyer ADD COLUMN IF NOT EXISTS statut TEXT NOT NULL DEFAULT 'confirme';
+    ALTER TABLE paiements_loyer ADD COLUMN IF NOT EXISTS confirme_par INTEGER REFERENCES users(id);
+    ALTER TABLE paiements_loyer ADD COLUMN IF NOT EXISTS confirme_at TIMESTAMPTZ;
+    ALTER TABLE paiements_loyer ADD COLUMN IF NOT EXISTS conteste_par INTEGER REFERENCES users(id);
+    ALTER TABLE paiements_loyer ADD COLUMN IF NOT EXISTS conteste_at TIMESTAMPTZ;
+    ALTER TABLE paiements_loyer ADD COLUMN IF NOT EXISTS motif_contestation TEXT;
+    ALTER TABLE paiements_loyer DROP CONSTRAINT IF EXISTS paiements_statut_check;
+    ALTER TABLE paiements_loyer ADD CONSTRAINT paiements_statut_check
+      CHECK (statut IN ('en_attente','confirme','conteste'));
+  `);
+  console.log("✅ Validation des paiements prête.");
+
   // ── Index ──────────────────────────────────────────────────────────────
   // Créés en dernier : certains portent sur des colonnes ajoutées par les
   // migrations ci-dessus. PostgreSQL indexe déjà les clés primaires et les
@@ -388,6 +406,7 @@ async function migrate() {
     CREATE INDEX IF NOT EXISTS idx_contrats_statut ON contrats(statut);
 
     CREATE INDEX IF NOT EXISTS idx_paiements_contrat ON paiements_loyer(contrat_id);
+    CREATE INDEX IF NOT EXISTS idx_paiements_statut ON paiements_loyer(statut);
     CREATE INDEX IF NOT EXISTS idx_documents_contrat ON documents(contrat_id);
 
     CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, lu);

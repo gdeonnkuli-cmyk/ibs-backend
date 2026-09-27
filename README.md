@@ -61,6 +61,9 @@ Ce script rejoue tout le parcours V0 : inscription bailleur + locataire → vér
 | POST | `/api/auth/forgot-password` | Demande d'un code de réinitialisation par SMS |
 | POST | `/api/auth/reset-password` | Nouveau mot de passe (téléphone + code + mot de passe) |
 | POST | `/api/rappels/executer[?simulation=true]` | Tour de rappels immédiat, réel ou à blanc (admin) |
+| POST | `/api/paiements/:contrat/:mois/confirmer` | Le bailleur confirme la réception d'un loyer |
+| POST | `/api/paiements/:contrat/:mois/contester` | Contester une déclaration de l'autre partie |
+| GET | `/api/paiements/admin/litiges` | Mois contestés, avec motif et parties (admin) |
 | POST | `/api/auth/login` | Connexion |
 | GET  | `/api/auth/admin/cni-pending` | CNI en attente de vérification (admin) |
 | POST | `/api/auth/admin/cni-review/:id` | Valider/rejeter une CNI (admin) |
@@ -130,6 +133,41 @@ révocables. Réinitialiser un mot de passe ne déconnecte donc pas une session
 déjà ouverte ailleurs. Suffisant contre l'oubli, insuffisant contre un compte
 compromis — il faudrait dater les changements de mot de passe et rejeter les
 jetons antérieurs.
+
+## Carnet de loyer : validation par les deux parties
+
+Un mois n'est payé que lorsque le bailleur l'a reconnu.
+
+| Qui déclare | Statut obtenu | Suite |
+|---|---|---|
+| Locataire | `en_attente` | SMS au bailleur, qui confirme ou conteste |
+| Bailleur | `confirme` | SMS au locataire |
+
+L'asymétrie est volontaire : le bailleur est le créancier, reconnaître à tort un
+paiement joue contre lui. Le locataire, lui, affirme un fait à son avantage — la
+confirmation lui est donc demandée.
+
+```
+POST /api/paiements                             déclarer un mois
+POST /api/paiements/:contrat/:mois/confirmer    bailleur uniquement
+POST /api/paiements/:contrat/:mois/contester    l'autre partie, motif obligatoire
+GET  /api/paiements/admin/litiges               mois contestés (admin)
+```
+
+Un mois confirmé ne se réécrit pas par une redéclaration : seul le bailleur peut
+revenir sur sa parole. On ne conteste pas sa propre déclaration — on la corrige.
+
+**Contestation** : le mois passe en `conteste` avec son motif, les deux parties
+sont notifiées et le litige apparaît dans l'espace admin. IBS constate et
+conserve la trace, elle ne tranche pas sur le fond.
+
+**Reçu PDF** : émis uniquement sur un mois confirmé. En délivrer un sur une
+déclaration en attente ou contestée reviendrait à fabriquer une preuve que
+personne n'a validée.
+
+Les paiements enregistrés avant cette évolution sont repris en `confirme` : ils
+ont été déclarés sous l'ancien régime, les remettre rétroactivement en cause
+serait faux.
 
 ## Rappels automatiques
 
