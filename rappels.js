@@ -37,11 +37,23 @@ async function reserverRappel(contratId, colonne, simulation) {
   return r.rows.length > 0;
 }
 
-/** N'envoie que hors simulation ; dans les deux cas, consigne le message. */
-async function envoyer(journal, userId, message, simulation) {
-  journal.push({ destinataire: userId, message });
-  if (!simulation) await notify(userId, message, "sms");
+/**
+ * N'envoie que hors simulation ; dans les deux cas, consigne le message.
+ * Le journal porte le nom et le numéro : un aperçu qui n'affiche qu'un
+ * identifiant de ligne ne permet pas de contrôler à qui le SMS partirait.
+ */
+async function envoyer(journal, destinataire, message, simulation) {
+  journal.push({
+    destinataire_id: destinataire.id,
+    nom: destinataire.nom,
+    telephone: destinataire.telephone,
+    message,
+  });
+  if (!simulation) await notify(destinataire.id, message, "sms");
 }
+
+const bailleur = (c) => ({ id: c.bailleur_id, nom: c.bailleur_nom, telephone: c.bailleur_tel });
+const locataire = (c) => ({ id: c.locataire_id, nom: c.locataire_nom, telephone: c.locataire_tel });
 
 function dateFinDeBail(contrat) {
   const fin = new Date(contrat.signed_at);
@@ -52,10 +64,14 @@ function dateFinDeBail(contrat) {
 // ── Baux arrivant à échéance ──────────────────────────────────────────────
 async function rappelsFinDeBail({ simulation = false, journal = [] } = {}) {
   const r = await query(
-    `SELECT c.id, c.bailleur_id, c.locataire_id, c.signed_at, c.duree_mois, p.titre
+    `SELECT c.id, c.signed_at, c.duree_mois, p.titre,
+            ub.id AS bailleur_id, ub.nom AS bailleur_nom, ub.telephone AS bailleur_tel,
+            ul.id AS locataire_id, ul.nom AS locataire_nom, ul.telephone AS locataire_tel
      FROM contrats c
      JOIN offres o ON o.id = c.offre_id
      JOIN proprietes p ON p.id = o.propriete_id
+     JOIN users ub ON ub.id = c.bailleur_id
+     JOIN users ul ON ul.id = c.locataire_id
      WHERE c.statut = 'signe' AND c.signed_at IS NOT NULL`
   );
 
@@ -67,8 +83,8 @@ async function rappelsFinDeBail({ simulation = false, journal = [] } = {}) {
     if (!(await reserverRappel(c.id, "dernier_rappel_echeance", simulation))) continue;
 
     const dateFin = fin.toISOString().slice(0, 10);
-    await envoyer(journal, c.bailleur_id, `IBS : le bail "${c.titre}" se termine dans ${joursRestants} jour(s), le ${dateFin}. Pensez au renouvellement ou au préavis.`, simulation);
-    await envoyer(journal, c.locataire_id, `IBS : votre bail "${c.titre}" se termine dans ${joursRestants} jour(s), le ${dateFin}. Rapprochez-vous de votre bailleur.`, simulation);
+    await envoyer(journal, bailleur(c), `IBS : le bail "${c.titre}" se termine dans ${joursRestants} jour(s), le ${dateFin}. Pensez au renouvellement ou au préavis.`, simulation);
+    await envoyer(journal, locataire(c), `IBS : votre bail "${c.titre}" se termine dans ${joursRestants} jour(s), le ${dateFin}. Rapprochez-vous de votre bailleur.`, simulation);
     envoyes += 1;
   }
   return envoyes;
@@ -79,12 +95,15 @@ async function rappelsFinDeBail({ simulation = false, journal = [] } = {}) {
 // mois échus du bail qui n'ont pas leur ligne.
 async function rappelsLoyerEnRetard({ simulation = false, journal = [] } = {}) {
   const r = await query(
-    `SELECT c.id, c.bailleur_id, c.locataire_id, c.signed_at, c.created_at,
-            c.duree_mois, c.loyer_usd, p.titre,
+    `SELECT c.id, c.signed_at, c.created_at, c.duree_mois, c.loyer_usd, p.titre,
+            ub.id AS bailleur_id, ub.nom AS bailleur_nom, ub.telephone AS bailleur_tel,
+            ul.id AS locataire_id, ul.nom AS locataire_nom, ul.telephone AS locataire_tel,
             (SELECT count(*) FROM paiements_loyer pl WHERE pl.contrat_id = c.id) AS nb_payes
      FROM contrats c
      JOIN offres o ON o.id = c.offre_id
      JOIN proprietes p ON p.id = o.propriete_id
+     JOIN users ub ON ub.id = c.bailleur_id
+     JOIN users ul ON ul.id = c.locataire_id
      WHERE c.statut = 'signe'`
   );
 
@@ -116,8 +135,8 @@ async function rappelsLoyerEnRetard({ simulation = false, journal = [] } = {}) {
 
     const somme = (enRetard * Number(c.loyer_usd)).toFixed(0);
     const pluriel = enRetard > 1 ? "s" : "";
-    await envoyer(journal, c.locataire_id, `IBS : ${enRetard} mois de loyer non réglé${pluriel} pour "${c.titre}" (environ ${somme} USD). Régularisez auprès de votre bailleur.`, simulation);
-    await envoyer(journal, c.bailleur_id, `IBS : ${enRetard} mois de loyer non réglé${pluriel} sur le bail "${c.titre}" (environ ${somme} USD).`, simulation);
+    await envoyer(journal, locataire(c), `IBS : ${enRetard} mois de loyer non réglé${pluriel} pour "${c.titre}" (environ ${somme} USD). Régularisez auprès de votre bailleur.`, simulation);
+    await envoyer(journal, bailleur(c), `IBS : ${enRetard} mois de loyer non réglé${pluriel} sur le bail "${c.titre}" (environ ${somme} USD).`, simulation);
     envoyes += 1;
   }
   return envoyes;
