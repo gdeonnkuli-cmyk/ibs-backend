@@ -8,12 +8,12 @@
 // Durée retenue faute d'autre indication. Elle est modifiable à chaque congé :
 // la durée applicable dépend du bail et du droit congolais, que ce code ne
 // prétend pas trancher.
-const PREAVIS_JOURS_DEFAUT = 40;
+const PREAVIS_JOURS_DEFAUT = 90;
 
 // Le rappel doit arriver assez tôt pour que le congé soit encore possible,
 // avec de la marge : le planificateur ne passe que deux fois par jour et ne
 // relance qu'une fois par semaine.
-const JOURS_ALERTE_FIN = 50;
+const JOURS_ALERTE_FIN = 100;
 
 // Une fenêtre plus courte que le préavis rendrait le rappel inutile : il
 // arriverait après la date limite pour donner congé. Plutôt que de laisser
