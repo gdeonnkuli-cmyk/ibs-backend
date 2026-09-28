@@ -223,9 +223,18 @@ router.get("/contrat/:contrat_id", requireAuth, async (req, res) => {
       });
     }
 
+    // Le carnet dit si le paiement en ligne est ouvert sur ce bail : sans cela,
+    // l'écran proposerait un bouton qui ne mène qu'à un refus.
+    const compte = await query(
+      `SELECT 1 FROM comptes_encaissement
+       WHERE bailleur_id = $1 AND statut = 'actif' AND flw_subaccount_id IS NOT NULL`,
+      [c.bailleur_id]
+    );
+
     const moisEnRetard = echeancier.filter(e => e.statut === "en_retard").length;
     res.json({
       echeancier,
+      paiement_mobile_possible: compte.rows.length > 0,
       mois_en_retard: moisEnRetard,
       mois_a_confirmer: echeancier.filter(e => e.statut === "en_attente_confirmation").length,
       mois_contestes: echeancier.filter(e => e.statut === "conteste").length,
@@ -298,15 +307,29 @@ router.get("/:contrat_id/recu/:mois", async (req, res) => {
     ligne("Bien concerné", `${paiement.titre} — ${paiement.commune}`);
     ligne("Bailleur", paiement.bailleur_nom);
     ligne("Locataire", paiement.locataire_nom);
-    ligne("Montant déclaré payé", `${paiement.montant_usd} USD`);
-    ligne("Moyen de paiement", paiement.moyen || "Non précisé");
-    ligne("Déclaré le", new Date(paiement.created_at).toLocaleDateString("fr-FR"));
-    ligne("Confirmé par le bailleur le", paiement.confirme_at ? new Date(paiement.confirme_at).toLocaleDateString("fr-FR") : "—");
+    // Un loyer réglé par Mobile Money n'est pas une déclaration : la passerelle
+    // a constaté le virement. Le reçu doit dire lequel des deux il atteste,
+    // sans quoi il promettrait la même valeur probante aux deux.
+    const parPasserelle = paiement.moyen === "mobile_money" && paiement.tx_ref;
+
+    ligne(parPasserelle ? "Montant réglé" : "Montant déclaré payé", `${paiement.montant_usd} USD`);
+    ligne("Moyen de paiement", parPasserelle ? "Mobile Money" : (paiement.moyen || "Non précisé"));
+    if (parPasserelle) {
+      ligne("Référence de transaction", paiement.tx_ref);
+      ligne("Réglé le", new Date(paiement.confirme_at || paiement.created_at).toLocaleDateString("fr-FR"));
+    } else {
+      ligne("Déclaré le", new Date(paiement.created_at).toLocaleDateString("fr-FR"));
+      ligne("Confirmé par le bailleur le", paiement.confirme_at ? new Date(paiement.confirme_at).toLocaleDateString("fr-FR") : "—");
+    }
 
     doc.moveDown(1);
     doc.fillColor(MUTED).fontSize(7.5).font("Helvetica-Oblique").text(
-      "Ce reçu atteste d'un paiement déclaré dans le carnet de loyer IBS et confirmé par le bailleur. " +
-      "IBS ne transite jamais les fonds — ce document n'est pas une preuve de virement bancaire.",
+      parPasserelle
+        ? "Ce reçu atteste d'un loyer réglé par Mobile Money via la passerelle de paiement, et reversé "
+          + "directement sur le compte d'encaissement du bailleur. IBS ne détient à aucun moment ces fonds. "
+          + "La référence de transaction ci-dessus permet de retrouver le virement auprès de l'opérateur."
+        : "Ce reçu atteste d'un paiement déclaré dans le carnet de loyer IBS et confirmé par le bailleur. "
+          + "IBS ne transite jamais les fonds — ce document n'est pas une preuve de virement bancaire.",
       { width: 480 }
     );
 

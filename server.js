@@ -42,6 +42,7 @@ app.use("/api/resume", require("./routes/resume"));
 app.use("/api/uploads", require("./routes/uploads"));
 app.use("/api/rappels", require("./routes/rappels"));
 app.use("/api/bail", require("./routes/bail"));
+app.use("/api/encaissement", require("./routes/encaissement"));
 
 app.use((req, res) => res.status(404).json({ error: "Route introuvable." }));
 app.use((err, req, res, next) => {

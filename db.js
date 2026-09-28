@@ -429,6 +429,51 @@ async function migrate() {
   `);
   console.log("✅ Fin de bail prête.");
 
+  // ── Migration : encaissement du loyer par Mobile Money ──────────────────
+  // Le compte d'encaissement appartient au bailleur, pas à IBS : les fonds sont
+  // reversés directement par la passerelle sur son numéro ou son compte. IBS ne
+  // les détient à aucun moment — ce que le reçu de loyer affirme depuis
+  // toujours, et qui cesserait d'être vrai si la plateforme encaissait.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS comptes_encaissement (
+      id SERIAL PRIMARY KEY,
+      bailleur_id INTEGER NOT NULL UNIQUE REFERENCES users(id),
+      type TEXT NOT NULL CHECK (type IN ('mobile_money','banque')),
+      operateur TEXT,
+      numero TEXT NOT NULL,
+      titulaire TEXT NOT NULL,
+      flw_subaccount_id TEXT,
+      statut TEXT NOT NULL DEFAULT 'actif' CHECK (statut IN ('actif','suspendu')),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ
+    );
+  `);
+
+  // Journal des tentatives de paiement. Séparé de paiements_loyer, qui ne porte
+  // qu'une ligne par mois : un locataire qui abandonne puis recommence produit
+  // plusieurs tentatives pour un seul mois, et l'historique des échecs a sa
+  // valeur quand il faut retrouver où l'argent est passé.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS encaissements (
+      id SERIAL PRIMARY KEY,
+      contrat_id INTEGER NOT NULL REFERENCES contrats(id),
+      mois DATE NOT NULL,
+      locataire_id INTEGER NOT NULL REFERENCES users(id),
+      montant_usd REAL NOT NULL,
+      tx_ref TEXT NOT NULL UNIQUE,
+      flw_transaction_id TEXT,
+      statut TEXT NOT NULL DEFAULT 'initie' CHECK (statut IN ('initie','reussi','echoue')),
+      echec_motif TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      confirme_at TIMESTAMPTZ
+    );
+  `);
+
+  // La référence de transaction est reportée sur le mois soldé : sans elle, un
+  // reçu de paiement Mobile Money ne permettrait pas de remonter au virement.
+  await pool.query(`ALTER TABLE paiements_loyer ADD COLUMN IF NOT EXISTS tx_ref TEXT;`);
+  console.log("✅ Encaissement Mobile Money prêt.");
+
   // ── Index ──────────────────────────────────────────────────────────────
   // Créés en dernier : certains portent sur des colonnes ajoutées par les
   // migrations ci-dessus. PostgreSQL indexe déjà les clés primaires et les
@@ -474,6 +519,8 @@ async function migrate() {
     CREATE INDEX IF NOT EXISTS idx_avis_quartier_commune ON avis_quartier(commune);
     CREATE INDEX IF NOT EXISTS idx_audit_user ON logs_audit(user_id, id DESC);
     CREATE INDEX IF NOT EXISTS idx_premium_bailleur ON abonnements_premium(bailleur_id);
+    CREATE INDEX IF NOT EXISTS idx_encaissements_contrat ON encaissements(contrat_id, mois);
+    CREATE INDEX IF NOT EXISTS idx_encaissements_statut ON encaissements(statut, created_at DESC);
   `);
   console.log("✅ Index prêts.");
 
