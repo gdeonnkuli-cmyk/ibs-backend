@@ -73,6 +73,31 @@ router.post("/:id/preavis/annuler", requireAuth, async (req, res) => {
       return res.status(403).json({ error: "Seule la partie qui a donné congé peut l'annuler." });
     }
 
+    // Une fois la sortie engagée, le congé ne se retire plus : sans ce garde-fou
+    // le bail repartait en 'signe' en laissant derrière lui un état des lieux de
+    // sortie accepté et une garantie restituée — des pièces qui n'ont aucun sens
+    // sur un bail en cours, et que personne ne pourrait plus corriger. Tant que
+    // rien n'est acté (constat encore en attente ou contesté, garantie non
+    // proposée), le congé reste révocable.
+    const engage = await query(
+      `SELECT
+         EXISTS (SELECT 1 FROM etats_lieux WHERE contrat_id = $1 AND type = 'sortie' AND statut = 'accepte') AS constat,
+         EXISTS (SELECT 1 FROM garanties WHERE contrat_id = $1 AND statut <> 'due') AS garantie`,
+      [c.id]
+    );
+    const { constat, garantie } = engage.rows[0];
+    if (constat || garantie) {
+      return res.status(409).json({
+        error: constat
+          ? "L'état des lieux de sortie est accepté : le congé ne peut plus être annulé."
+          : "La restitution de la garantie est engagée : le congé ne peut plus être annulé.",
+      });
+    }
+
+    // Le constat de sortie encore en attente ou contesté perd son objet : le
+    // laisser afficherait un état des lieux de sortie sur un bail qui continue.
+    await query(`DELETE FROM etats_lieux WHERE contrat_id = $1 AND type = 'sortie'`, [c.id]);
+
     await query(
       `UPDATE contrats SET statut = 'signe', preavis_par = NULL, preavis_at = NULL,
                            preavis_motif = NULL, fin_effective = NULL WHERE id = $1`, [c.id]);
@@ -337,7 +362,7 @@ router.get("/admin/litiges", requireAuth, requireRole("admin"), async (req, res)
   try {
     const [etats, garanties] = await Promise.all([
       query(
-        `SELECT e.contrat_id, e.type, e.motif_contestation, e.valide_at, pr.titre, pr.commune,
+        `SELECT e.contrat_id, e.type, e.observations, e.photos, e.motif_contestation, e.valide_at, pr.titre, pr.commune,
                 b.nom AS bailleur_nom, b.telephone AS bailleur_tel,
                 l.nom AS locataire_nom, l.telephone AS locataire_tel
          FROM etats_lieux e
