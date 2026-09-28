@@ -17,21 +17,16 @@
 // Ici la passerelle atteste le virement, et le mois est soldé d'office.
 
 const express = require("express");
-const crypto = require("crypto");
 const { query } = require("../db");
 const { requireAuth, requireRole, agenceIdDe } = require("../auth");
 const { auditLog } = require("../audit");
 const { notify } = require("../notify");
+const passerelle = require("../passerelles");
 
 const router = express.Router();
 
-const FLW_SECRET = process.env.FLUTTERWAVE_SECRET_KEY || "";
-const FLW_WEBHOOK_SECRET = process.env.FLUTTERWAVE_WEBHOOK_SECRET || "";
+const WEBHOOK_SECRET = process.env.FLUTTERWAVE_WEBHOOK_SECRET || "";
 const REDIRECT_URL = process.env.FLUTTERWAVE_REDIRECT_URL || "";
-// Rendue configurable pour pouvoir dérouler le parcours complet contre une
-// passerelle factice : sans cela, la logique d'encaissement ne serait jamais
-// exécutée avant la production.
-const FLW_API = process.env.FLUTTERWAVE_API_URL || "https://api.flutterwave.com/v3";
 
 // Part prélevée par IBS sur chaque loyer, en pourcentage. À zéro par défaut :
 // un taux de commission est une décision commerciale, pas une valeur qu'un
@@ -41,20 +36,17 @@ const COMMISSION_PCT = Math.min(Math.max(Number(process.env.IBS_COMMISSION_LOYER
 const OPERATEURS = ["m-pesa", "orange-money", "airtel-money", "africell-money"];
 
 function passerelleConfiguree() {
-  if (!FLW_SECRET) return "Paiement du loyer indisponible : passerelle non configurée côté serveur.";
+  const pbm = passerelle.indisponible();
+  if (pbm) return "Paiement du loyer indisponible : " + pbm;
   if (!REDIRECT_URL) return "Paiement du loyer indisponible : URL de retour non configurée côté serveur.";
+  // Une passerelle qui encaisse sur le compte d'IBS ferait détenir à la
+  // plateforme l'argent du bailleur. C'est un choix juridique, pas un défaut de
+  // configuration : le module refuse plutôt que de le prendre à la légère.
+  if (!passerelle.supporteBeneficiaires) {
+    return `Paiement du loyer indisponible : la passerelle « ${passerelle.nom} » ne reverse pas directement au bailleur.`;
+  }
   return null;
 }
-
-const flw = (chemin, options = {}) =>
-  fetch(FLW_API + chemin, {
-    ...options,
-    headers: {
-      Authorization: `Bearer ${FLW_SECRET}`,
-      "Content-Type": "application/json",
-      ...(options.headers || {}),
-    },
-  });
 
 const normaliserMois = (mois) => (mois.length === 7 ? mois + "-01" : mois);
 
@@ -115,30 +107,22 @@ router.post("/compte", requireAuth, requireRole("bailleur", "intermediaire"), as
     // au bailleur et non à IBS. Sans lui, aucun paiement ne doit être proposé.
     let subaccountId = null;
     try {
-      const r = await flw("/subaccounts", {
-        method: "POST",
-        body: JSON.stringify({
-          account_bank: type === "mobile_money" ? String(operateur).toUpperCase() : String(operateur || ""),
-          account_number: String(numero).trim(),
-          business_name: String(titulaire).trim(),
-          business_email: `${String(user.telephone || "").replace(/\D/g, "")}@ibs-users.cd`,
-          business_mobile: user.telephone,
-          country: "CD",
-          split_type: "percentage",
-          split_value: COMMISSION_PCT / 100,
-        }),
+      const b = await passerelle.creerBeneficiaire({
+        type,
+        operateur,
+        numero: String(numero).trim(),
+        titulaire: String(titulaire).trim(),
+        commissionPct: COMMISSION_PCT,
+        bailleur: user,
       });
-      const data = await r.json();
-      if (data.status !== "success" || !data.data?.subaccount_id) {
-        console.error("Flutterwave subaccount error:", data);
-        return res.status(502).json({
-          error: "La passerelle a refusé ce compte. Vérifiez le numéro et le nom du titulaire.",
-        });
-      }
-      subaccountId = data.data.subaccount_id;
+      subaccountId = b.id;
     } catch (e) {
-      console.error("Flutterwave injoignable:", e.message);
-      return res.status(502).json({ error: "Passerelle de paiement injoignable. Réessayez dans un moment." });
+      // Le message de l'adaptateur est destiné au bailleur : il dit ce qu'il
+      // peut corriger. Une panne réseau n'en porte pas, d'où le repli.
+      console.error(`Passerelle ${passerelle.nom} :`, e.message);
+      return res.status(502).json({
+        error: e.message || "Passerelle de paiement injoignable. Réessayez dans un moment.",
+      });
     }
 
     await query(
@@ -200,36 +184,21 @@ router.post("/:contrat_id/:mois/initier", requireAuth, async (req, res) => {
 
     let lien;
     try {
-      const r = await flw("/payments", {
-        method: "POST",
-        body: JSON.stringify({
-          tx_ref,
-          amount: montant,
-          currency: "USD",
-          redirect_url: REDIRECT_URL,
-          payment_options: "mobilemoneyfranco,card",
-          customer: {
-            email: `${String(loc.telephone || "").replace(/\D/g, "")}@ibs-users.cd`,
-            phonenumber: loc.telephone,
-            name: loc.nom,
-          },
-          // C'est cette ligne qui fait que l'argent va au bailleur.
-          subaccounts: [{ id: compte.rows[0].flw_subaccount_id }],
-          customizations: {
-            title: "IBS — Loyer",
-            description: `Loyer de ${moisDate.slice(0, 7)}`,
-          },
-        }),
+      // Le bénéficiaire est le bailleur : c'est ce qui fait que l'argent ne
+      // passe pas par IBS.
+      const p = await passerelle.creerPaiement({
+        txRef: tx_ref,
+        montant,
+        devise: "USD",
+        redirectUrl: REDIRECT_URL,
+        client: loc,
+        beneficiaireId: compte.rows[0].flw_subaccount_id,
+        libelle: `Loyer de ${moisDate.slice(0, 7)}`,
       });
-      const data = await r.json();
-      if (data.status !== "success" || !data.data?.link) {
-        console.error("Flutterwave payment error:", data);
-        return res.status(502).json({ error: "Impossible de démarrer le paiement pour le moment." });
-      }
-      lien = data.data.link;
+      lien = p.lien;
     } catch (e) {
-      console.error("Flutterwave injoignable:", e.message);
-      return res.status(502).json({ error: "Passerelle de paiement injoignable. Réessayez dans un moment." });
+      console.error(`Passerelle ${passerelle.nom} :`, e.message);
+      return res.status(502).json({ error: e.message || "Passerelle de paiement injoignable." });
     }
 
     await query(
@@ -287,7 +256,8 @@ async function crediterMois(txRef, flwTransactionId) {
 // ── Vérification au retour du navigateur (locataire) ─────────────────────
 router.post("/verifier", requireAuth, async (req, res) => {
   try {
-    if (!FLW_SECRET) return res.status(503).json({ error: "Passerelle non configurée." });
+    const pbm = passerelle.indisponible();
+    if (pbm) return res.status(503).json({ error: pbm });
     const { transaction_id, tx_ref } = req.body;
     if (!transaction_id || !tx_ref) {
       return res.status(400).json({ error: "transaction_id et tx_ref sont requis." });
@@ -302,24 +272,22 @@ router.post("/verifier", requireAuth, async (req, res) => {
 
     let tx;
     try {
-      const r = await flw(`/transactions/${transaction_id}/verify`);
-      const data = await r.json();
-      tx = data.status === "success" ? data.data : null;
+      tx = await passerelle.verifierTransaction(transaction_id);
     } catch (e) {
-      console.error("Flutterwave injoignable:", e.message);
+      console.error(`Passerelle ${passerelle.nom} :`, e.message);
       return res.status(502).json({ error: "Passerelle injoignable. Le paiement sera confirmé automatiquement." });
     }
 
     // Le montant est comparé à celui de la tentative, pas à celui que le client
     // annonce : sans cette vérification, il suffirait de payer un dollar.
     const attendu = Number(enc.rows[0].montant_usd);
-    const valide = tx && tx.status === "successful" && tx.tx_ref === tx_ref
-      && tx.currency === "USD" && Number(tx.amount) >= attendu;
+    const valide = tx && tx.reussi && tx.txRef === tx_ref
+      && tx.devise === "USD" && Number(tx.montant) >= attendu;
 
     if (!valide) {
       await query(
         `UPDATE encaissements SET statut = 'echoue', echec_motif = $2 WHERE tx_ref = $1 AND statut = 'initie'`,
-        [tx_ref, tx ? `statut ${tx.status}, montant ${tx.amount} ${tx.currency}` : "transaction introuvable"]
+        [tx_ref, tx ? `statut ${tx.statutBrut || (tx.reussi ? "reussi" : "echoue")}, montant ${tx.montant} ${tx.devise}` : "transaction introuvable"]
       );
       return res.status(402).json({ error: "Paiement non confirmé par la passerelle." });
     }
@@ -335,20 +303,16 @@ router.post("/verifier", requireAuth, async (req, res) => {
 // même payé, et son mois doit être soldé.
 router.post("/webhook", express.json(), async (req, res) => {
   try {
-    if (!FLW_WEBHOOK_SECRET) return res.status(503).end();
-    const recu = Buffer.from(String(req.headers["verif-hash"] || ""));
-    const attendu = Buffer.from(FLW_WEBHOOK_SECRET);
-    if (recu.length !== attendu.length || !crypto.timingSafeEqual(recu, attendu)) {
-      return res.status(401).end();
-    }
+    if (!WEBHOOK_SECRET) return res.status(503).end();
+    if (!passerelle.signatureValide(req.headers, WEBHOOK_SECRET)) return res.status(401).end();
 
-    const tx = req.body?.data;
-    if (tx?.status === "successful" && tx?.tx_ref && String(tx.tx_ref).startsWith("IBS-LOYER-")) {
-      const enc = await query(`SELECT montant_usd FROM encaissements WHERE tx_ref = $1`, [tx.tx_ref]);
+    const tx = passerelle.lireWebhook(req.body);
+    if (tx?.reussi && tx.txRef && String(tx.txRef).startsWith("IBS-LOYER-")) {
+      const enc = await query(`SELECT montant_usd FROM encaissements WHERE tx_ref = $1`, [tx.txRef]);
       // Même contrôle de montant qu'au retour navigateur : un webhook est une
       // entrée externe, pas une autorité.
-      if (enc.rows.length && Number(tx.amount) >= Number(enc.rows[0].montant_usd) && tx.currency === "USD") {
-        await crediterMois(tx.tx_ref, tx.id);
+      if (enc.rows.length && Number(tx.montant) >= Number(enc.rows[0].montant_usd) && tx.devise === "USD") {
+        await crediterMois(tx.txRef, tx.transactionId);
       }
     }
     res.status(200).end();
