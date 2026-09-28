@@ -13,8 +13,8 @@
 //   · RAPPELS_AUTO=false coupe le planificateur, et le mode test ne l'arme pas.
 const { query } = require("./db");
 const { notify } = require("./notify");
+const { JOURS_ALERTE_FIN } = require("./regles");
 
-const JOURS_AVANT_FIN = 30;      // fenêtre d'alerte avant l'échéance du bail
 const DELAI_RELANCE_JOURS = 7;   // au plus un rappel par semaine et par contrat
 const INTERVALLE_MS = 12 * 60 * 60 * 1000;
 
@@ -79,7 +79,7 @@ async function rappelsFinDeBail({ simulation = false, journal = [] } = {}) {
   for (const c of r.rows) {
     const fin = dateFinDeBail(c);
     const joursRestants = Math.ceil((fin - new Date()) / (1000 * 60 * 60 * 24));
-    if (joursRestants < 0 || joursRestants > JOURS_AVANT_FIN) continue;
+    if (joursRestants < 0 || joursRestants > JOURS_ALERTE_FIN) continue;
     if (!(await reserverRappel(c.id, "dernier_rappel_echeance", simulation))) continue;
 
     const dateFin = fin.toISOString().slice(0, 10);

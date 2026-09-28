@@ -4,13 +4,10 @@ const { requireAuth, requireRole, agenceIdDe } = require("../auth");
 const { notify } = require("../notify");
 const { auditLog } = require("../audit");
 const { urlDeStockageValide, MESSAGE_URL_INVALIDE } = require("../storage");
+const { PREAVIS_JOURS_DEFAUT } = require("../regles");
 
 const router = express.Router();
 
-// Durée de préavis retenue faute d'autre indication. Elle est modifiable à
-// chaque congé : la durée applicable dépend du bail et du droit congolais, que
-// ce code ne prétend pas trancher.
-const PREAVIS_JOURS_DEFAUT = 30;
 
 function estCoteBailleur(user, c) { return agenceIdDe(user) === c.bailleur_id; }
 
@@ -353,6 +350,9 @@ router.get("/:id/fin", requireAuth, async (req, res) => {
         ? { ...garantie.rows[0], propose_par_moi: garantie.rows[0].declare_par === req.user.id }
         : { statut: "due", montant_initial: mois * Number(c.loyer_usd), montant_restitue: null },
       garantie_prevue: mois > 0,
+      // La durée par défaut est une règle du serveur : la recopier dans le
+      // frontend, c'est prendre le risque qu'elle y reste quand elle change ici.
+      preavis_jours_defaut: PREAVIS_JOURS_DEFAUT,
     });
   } catch (e) { console.error(e); res.status(500).json({ error: "Erreur serveur." }); }
 });
