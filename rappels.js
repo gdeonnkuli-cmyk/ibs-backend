@@ -221,4 +221,18 @@ function demarrerPlanificateur() {
   return minuterie;
 }
 
-module.exports = { demarrerPlanificateur, passerUnTour, rappelsFinDeBail, rappelsLoyerEnRetard };
+// Les règles sont exposées pour que l'écran d'administration les affiche au
+// lieu de les recopier : sa description annonçait encore « fins de bail à moins
+// de 30 jours » alors que la fenêtre en faisait cent.
+const reglesRappels = () => ({
+  jours_alerte_fin: JOURS_ALERTE_FIN,
+  preavis_jours_defaut: PREAVIS_JOURS_DEFAUT,
+  relance_jours: DELAI_RELANCE_JOURS,
+  relance_lointaine_jours: RELANCE_LOINTAINE_JOURS,
+  jours_urgence: JOURS_URGENCE,
+  actif: process.env.RAPPELS_AUTO !== "false" && process.env.DEV_MODE !== "true",
+});
+
+module.exports = {
+  demarrerPlanificateur, passerUnTour, rappelsFinDeBail, rappelsLoyerEnRetard, reglesRappels,
+};
