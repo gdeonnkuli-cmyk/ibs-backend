@@ -469,9 +469,26 @@ async function migrate() {
     );
   `);
 
+  // ── Reversement au bailleur ──
+  // Les passerelles congolaises (FlexPay, MaxiCash) encaissent sur le compte du
+  // marchand : l'argent arrive chez IBS, puis un décaissement le porte au
+  // bailleur. Ces colonnes suivent ce second temps — sans elles, un loyer
+  // encaissé mais jamais reversé serait invisible.
+  await pool.query(`
+    ALTER TABLE encaissements ADD COLUMN IF NOT EXISTS reversement_statut TEXT
+      CHECK (reversement_statut IN ('non_requis','a_reverser','reverse','echoue'));
+    ALTER TABLE encaissements ADD COLUMN IF NOT EXISTS reversement_ref TEXT;
+    ALTER TABLE encaissements ADD COLUMN IF NOT EXISTS reversement_at TIMESTAMPTZ;
+    ALTER TABLE encaissements ADD COLUMN IF NOT EXISTS reversement_motif TEXT;
+    ALTER TABLE encaissements ADD COLUMN IF NOT EXISTS reversement_tentatives INTEGER NOT NULL DEFAULT 0;
+  `);
+
   // La référence de transaction est reportée sur le mois soldé : sans elle, un
   // reçu de paiement Mobile Money ne permettrait pas de remonter au virement.
   await pool.query(`ALTER TABLE paiements_loyer ADD COLUMN IF NOT EXISTS tx_ref TEXT;`);
+  // Le reçu doit dire si les fonds ont transité par IBS : la phrase « IBS ne
+  // détient jamais ces fonds » cesse d'être vraie en mode transit.
+  await pool.query(`ALTER TABLE paiements_loyer ADD COLUMN IF NOT EXISTS encaissement_mode TEXT;`);
   console.log("✅ Encaissement Mobile Money prêt.");
 
   // ── Index ──────────────────────────────────────────────────────────────

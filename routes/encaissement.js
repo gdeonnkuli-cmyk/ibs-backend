@@ -35,15 +35,37 @@ const COMMISSION_PCT = Math.min(Math.max(Number(process.env.IBS_COMMISSION_LOYER
 
 const OPERATEURS = ["m-pesa", "orange-money", "airtel-money", "africell-money"];
 
+// Deux façons dont l'argent peut aller du locataire au bailleur :
+//
+//   · "direct" — la passerelle reverse elle-même sur le compte du bailleur
+//     (sous-comptes, split). IBS n'est jamais détentrice des fonds. C'est le
+//     modèle à préférer, et celui que le reçu de loyer décrit depuis toujours.
+//
+//   · "transit" — la passerelle encaisse sur le compte marchand d'IBS, qui
+//     reverse ensuite au bailleur par décaissement. C'est le seul mode que
+//     permettent les passerelles congolaises (FlexPay, MaxiCash), et il fait
+//     transiter par IBS l'argent d'autrui — ce qui relève en RDC du statut
+//     d'établissement de paiement.
+//
+// Le mode transit ne s'active donc pas tout seul : il demande de poser
+// ENCAISSEMENT_TRANSIT_ASSUME=oui, pour qu'aucune configuration distraite ne
+// mette la plateforme dans cette position sans que personne l'ait voulu.
+const TRANSIT_ASSUME = process.env.ENCAISSEMENT_TRANSIT_ASSUME === "oui";
+const MODE = passerelle.supporteBeneficiaires ? "direct" : "transit";
+
 function passerelleConfiguree() {
   const pbm = passerelle.indisponible();
   if (pbm) return "Paiement du loyer indisponible : " + pbm;
   if (!REDIRECT_URL) return "Paiement du loyer indisponible : URL de retour non configurée côté serveur.";
-  // Une passerelle qui encaisse sur le compte d'IBS ferait détenir à la
-  // plateforme l'argent du bailleur. C'est un choix juridique, pas un défaut de
-  // configuration : le module refuse plutôt que de le prendre à la légère.
-  if (!passerelle.supporteBeneficiaires) {
-    return `Paiement du loyer indisponible : la passerelle « ${passerelle.nom} » ne reverse pas directement au bailleur.`;
+  if (MODE === "transit") {
+    if (!passerelle.supporteReversement) {
+      return `Paiement du loyer indisponible : la passerelle « ${passerelle.nom} » ne sait ni reverser au bailleur ni décaisser.`;
+    }
+    if (!TRANSIT_ASSUME) {
+      return `Paiement du loyer indisponible : la passerelle « ${passerelle.nom} » encaisse sur le compte d'IBS. `
+        + `Ce mode fait transiter les loyers par la plateforme et doit être assumé explicitement `
+        + `(ENCAISSEMENT_TRANSIT_ASSUME=oui).`;
+    }
   }
   return null;
 }
@@ -222,10 +244,13 @@ router.post("/:contrat_id/:mois/initier", requireAuth, async (req, res) => {
  */
 async function crediterMois(txRef, flwTransactionId) {
   const r = await query(
-    `UPDATE encaissements SET statut = 'reussi', flw_transaction_id = $2, confirme_at = NOW()
+    `UPDATE encaissements
+     SET statut = 'reussi', flw_transaction_id = $2, confirme_at = NOW(),
+         reversement_statut = $3
      WHERE tx_ref = $1 AND statut <> 'reussi'
      RETURNING contrat_id, mois, montant_usd, locataire_id`,
-    [txRef, flwTransactionId ? String(flwTransactionId) : null]
+    [txRef, flwTransactionId ? String(flwTransactionId) : null,
+     MODE === "transit" ? "a_reverser" : "non_requis"]
   );
   if (!r.rows.length) return null;
   const e = r.rows[0];
@@ -236,21 +261,84 @@ async function crediterMois(txRef, flwTransactionId) {
   // Soldé sans confirmation du bailleur : la passerelle atteste le virement, il
   // n'y a plus de parole à croire sur la sienne.
   await query(
-    `INSERT INTO paiements_loyer (contrat_id, mois, montant_usd, moyen, declare_par, statut, confirme_at, tx_ref)
-     VALUES ($1,$2,$3,'mobile_money',$4,'confirme',NOW(),$5)
+    `INSERT INTO paiements_loyer (contrat_id, mois, montant_usd, moyen, declare_par, statut, confirme_at, tx_ref, encaissement_mode)
+     VALUES ($1,$2,$3,'mobile_money',$4,'confirme',NOW(),$5,$6)
      ON CONFLICT (contrat_id, mois) DO UPDATE SET
        montant_usd = $3, moyen = 'mobile_money', statut = 'confirme', confirme_at = NOW(),
-       tx_ref = $5, conteste_par = NULL, conteste_at = NULL, motif_contestation = NULL`,
-    [e.contrat_id, e.mois, e.montant_usd, e.locataire_id, txRef]
+       tx_ref = $5, encaissement_mode = $6,
+       conteste_par = NULL, conteste_at = NULL, motif_contestation = NULL`,
+    [e.contrat_id, e.mois, e.montant_usd, e.locataire_id, txRef, MODE]
   );
 
   const libelle = new Date(e.mois).toISOString().slice(0, 7);
-  await notify(c.rows[0].bailleur_id,
-    `IBS : loyer de ${libelle} reçu (${e.montant_usd} USD) par Mobile Money. Les fonds sont versés sur votre compte d'encaissement.`, "sms");
+  // Le mois est soldé pour le locataire dans les deux modes. Ce qui change,
+  // c'est où est l'argent : le bailleur ne doit pas croire l'avoir reçu tant
+  // que le reversement n'est pas parti.
   await notify(e.locataire_id,
     `IBS : votre loyer de ${libelle} est réglé (${e.montant_usd} USD). Le reçu est disponible dans votre carnet.`, "sms");
 
-  return { contrat_id: e.contrat_id, mois: libelle, montant_usd: e.montant_usd };
+  if (MODE === "transit") {
+    await reverserAuBailleur(txRef, c.rows[0].bailleur_id, e, libelle);
+  } else {
+    await notify(c.rows[0].bailleur_id,
+      `IBS : loyer de ${libelle} reçu (${e.montant_usd} USD) par Mobile Money. Les fonds sont versés sur votre compte d'encaissement.`, "sms");
+  }
+
+  return { contrat_id: e.contrat_id, mois: libelle, montant_usd: e.montant_usd, mode: MODE };
+}
+
+/**
+ * Porte au bailleur un loyer encaissé sur le compte d'IBS.
+ *
+ * Lancé aussitôt après le crédit : plus les fonds séjournent chez IBS, moins la
+ * plateforme est un simple intermédiaire. Un échec n'annule pas le paiement du
+ * locataire — son mois est réglé, c'est la dette d'IBS envers le bailleur qui
+ * reste ouverte, et elle doit rester visible jusqu'à extinction.
+ */
+async function reverserAuBailleur(txRef, bailleurId, e, libelle) {
+  const compte = await query(
+    `SELECT numero FROM comptes_encaissement WHERE bailleur_id = $1 AND statut = 'actif'`,
+    [bailleurId]
+  );
+  if (!compte.rows.length) {
+    await query(
+      `UPDATE encaissements SET reversement_statut = 'echoue',
+         reversement_motif = 'aucun compte d''encaissement actif'
+       WHERE tx_ref = $1`, [txRef]);
+    console.error(`[REVERSEMENT] ${txRef} : le bailleur #${bailleurId} n'a plus de compte actif.`);
+    return;
+  }
+
+  try {
+    const r = await passerelle.reverser({
+      montant: e.montant_usd,
+      devise: "USD",
+      destinataire: compte.rows[0].numero,
+      reference: `REV-${txRef}`,
+    });
+    await query(
+      `UPDATE encaissements
+       SET reversement_statut = 'reverse', reversement_ref = $2, reversement_at = NOW(),
+           reversement_motif = NULL, reversement_tentatives = reversement_tentatives + 1
+       WHERE tx_ref = $1`,
+      [txRef, r.reference || null]
+    );
+    await notify(bailleurId,
+      `IBS : loyer de ${libelle} reçu (${e.montant_usd} USD) et reversé sur votre compte d'encaissement.`, "sms");
+  } catch (err) {
+    await query(
+      `UPDATE encaissements
+       SET reversement_statut = 'echoue', reversement_motif = $2,
+           reversement_tentatives = reversement_tentatives + 1
+       WHERE tx_ref = $1`,
+      [txRef, String(err.message).slice(0, 300)]
+    );
+    console.error(`[REVERSEMENT] ${txRef} en échec :`, err.message);
+    // Le bailleur est prévenu que l'argent est arrivé mais pas encore chez lui :
+    // le silence ici ferait passer un retard technique pour un impayé.
+    await notify(bailleurId,
+      `IBS : loyer de ${libelle} (${e.montant_usd} USD) bien reçu de votre locataire. Le versement sur votre compte est en cours de traitement.`, "sms");
+  }
 }
 
 // ── Vérification au retour du navigateur (locataire) ─────────────────────
@@ -317,6 +405,60 @@ router.post("/webhook", express.json(), async (req, res) => {
     }
     res.status(200).end();
   } catch (e) { console.error(e); res.status(500).end(); }
+});
+
+// ── Reversements en souffrance (admin) ───────────────────────────────────
+// Un loyer encaissé mais non reversé est une dette d'IBS envers un bailleur.
+// Sans cette liste, elle n'existerait que dans les logs.
+router.get("/admin/reversements", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    const r = await query(
+      `SELECT e.tx_ref, e.mois, e.montant_usd, e.reversement_statut, e.reversement_motif,
+              e.reversement_tentatives, e.confirme_at, e.contrat_id,
+              pr.titre, pr.commune,
+              b.id AS bailleur_id, b.nom AS bailleur_nom, b.telephone AS bailleur_tel
+       FROM encaissements e
+       JOIN contrats c ON c.id = e.contrat_id
+       JOIN offres o ON o.id = c.offre_id
+       JOIN proprietes pr ON pr.id = o.propriete_id
+       JOIN users b ON b.id = c.bailleur_id
+       WHERE e.statut = 'reussi' AND e.reversement_statut IN ('a_reverser','echoue')
+       ORDER BY e.confirme_at ASC`
+    );
+    const total = r.rows.reduce((t, x) => t + Number(x.montant_usd), 0);
+    res.json({ mode: MODE, reversements: r.rows, total: r.rows.length, montant_total_usd: total });
+  } catch (e) { console.error(e); res.status(500).json({ error: "Erreur serveur." }); }
+});
+
+// ── Rejouer un reversement (admin) ───────────────────────────────────────
+router.post("/admin/reversements/:tx_ref/rejouer", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    if (MODE !== "transit") {
+      return res.status(409).json({ error: "Les loyers sont reversés directement par la passerelle : rien à rejouer." });
+    }
+    const r = await query(
+      `SELECT e.*, c.bailleur_id FROM encaissements e
+       JOIN contrats c ON c.id = e.contrat_id
+       WHERE e.tx_ref = $1 AND e.statut = 'reussi'`,
+      [req.params.tx_ref]
+    );
+    if (!r.rows.length) return res.status(404).json({ error: "Encaissement introuvable." });
+    const e = r.rows[0];
+    if (e.reversement_statut === "reverse") {
+      return res.status(409).json({ error: "Ce loyer est déjà reversé." });
+    }
+
+    const libelle = new Date(e.mois).toISOString().slice(0, 7);
+    await reverserAuBailleur(e.tx_ref, e.bailleur_id, e, libelle);
+    await auditLog(req.user.id, "reversement_rejoue", { tx_ref: e.tx_ref });
+
+    const apres = await query(`SELECT reversement_statut, reversement_motif FROM encaissements WHERE tx_ref = $1`, [e.tx_ref]);
+    const statut = apres.rows[0];
+    res.json({
+      message: statut.reversement_statut === "reverse" ? "Loyer reversé au bailleur." : "Le reversement a de nouveau échoué.",
+      ...statut,
+    });
+  } catch (e) { console.error(e); res.status(500).json({ error: "Erreur serveur." }); }
 });
 
 module.exports = router;

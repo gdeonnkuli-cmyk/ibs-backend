@@ -324,12 +324,18 @@ router.get("/:contrat_id/recu/:mois", async (req, res) => {
 
     doc.moveDown(1);
     doc.fillColor(MUTED).fontSize(7.5).font("Helvetica-Oblique").text(
-      parPasserelle
-        ? "Ce reçu atteste d'un loyer réglé par Mobile Money via la passerelle de paiement, et reversé "
-          + "directement sur le compte d'encaissement du bailleur. IBS ne détient à aucun moment ces fonds. "
-          + "La référence de transaction ci-dessus permet de retrouver le virement auprès de l'opérateur."
-        : "Ce reçu atteste d'un paiement déclaré dans le carnet de loyer IBS et confirmé par le bailleur. "
-          + "IBS ne transite jamais les fonds — ce document n'est pas une preuve de virement bancaire.",
+      !parPasserelle
+        ? "Ce reçu atteste d'un paiement déclaré dans le carnet de loyer IBS et confirmé par le bailleur. "
+          + "IBS ne transite jamais les fonds — ce document n'est pas une preuve de virement bancaire."
+        : paiement.encaissement_mode === "transit"
+          // Dire « IBS ne détient jamais ces fonds » serait faux en mode transit :
+          // ils passent par le compte marchand avant d'aller au bailleur.
+          ? "Ce reçu atteste d'un loyer réglé par Mobile Money via la passerelle de paiement. Les fonds "
+            + "sont encaissés par IBS puis reversés au bailleur. La référence de transaction ci-dessus "
+            + "permet de retrouver le virement auprès de l'opérateur."
+          : "Ce reçu atteste d'un loyer réglé par Mobile Money via la passerelle de paiement, et reversé "
+            + "directement sur le compte d'encaissement du bailleur. IBS ne détient à aucun moment ces fonds. "
+            + "La référence de transaction ci-dessus permet de retrouver le virement auprès de l'opérateur.",
       { width: 480 }
     );
 
