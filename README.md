@@ -64,6 +64,11 @@ Ce script rejoue tout le parcours V0 : inscription bailleur + locataire → vér
 | POST | `/api/paiements/:contrat/:mois/confirmer` | Le bailleur confirme la réception d'un loyer |
 | POST | `/api/paiements/:contrat/:mois/contester` | Contester une déclaration de l'autre partie |
 | GET | `/api/paiements/admin/litiges` | Mois contestés, avec motif et parties (admin) |
+| POST | `/api/bail/:id/preavis` | Donner congé sur un bail signé |
+| POST | `/api/bail/:id/etat-lieux` | Déposer un état des lieux d'entrée ou de sortie |
+| POST | `/api/bail/:id/garantie` | Annoncer la restitution de la garantie (bailleur) |
+| POST | `/api/bail/:id/cloturer` | Clore le bail et remettre le bien sur le marché |
+| GET | `/api/bail/admin/litiges` | Constats et garanties contestés (admin) |
 | POST | `/api/auth/login` | Connexion |
 | GET  | `/api/auth/admin/cni-pending` | CNI en attente de vérification (admin) |
 | POST | `/api/auth/admin/cni-review/:id` | Valider/rejeter une CNI (admin) |
@@ -133,6 +138,44 @@ révocables. Réinitialiser un mot de passe ne déconnecte donc pas une session
 déjà ouverte ailleurs. Suffisant contre l'oubli, insuffisant contre un compte
 compromis — il faudrait dater les changements de mot de passe et rejeter les
 jetons antérieurs.
+
+## Fin de bail
+
+Un bail pouvait être créé, signé et renouvelé, mais jamais terminé : pas de
+congé, pas d'état des lieux, et la garantie — pourtant chiffrée au contrat —
+n'avait aucune trace de restitution. C'est le premier objet de litige entre
+bailleur et locataire.
+
+```
+POST /api/bail/:id/preavis                  donner congé (les deux parties)
+POST /api/bail/:id/preavis/annuler          le retirer (celle qui l'a donné)
+POST /api/bail/:id/etat-lieux               déposer un constat (entrée | sortie)
+POST /api/bail/:id/etat-lieux/:type/valider l'accepter ou le contester
+POST /api/bail/:id/garantie                 le bailleur annonce la restitution
+POST /api/bail/:id/garantie/valider         le locataire accepte ou conteste
+POST /api/bail/:id/cloturer                 clore le bail
+GET  /api/bail/:id/fin                      vue d'ensemble
+GET  /api/bail/admin/litiges                constats et garanties contestés (admin)
+```
+
+Le principe est celui du carnet de loyer : **celui qui constate n'est pas celui
+qui valide.** Un état des lieux déposé par une partie attend l'accord de
+l'autre ; un constat accepté ne se réécrit plus. La garantie n'est annoncée que
+par le bailleur, qui la détient, et toute retenue doit être motivée — c'est la
+retenue qui fait le litige.
+
+**Un bail ne se clôt qu'une fois les comptes faits** : état des lieux de sortie
+accepté, et garantie soldée lorsque le bail en prévoyait une. Sans quoi la
+clôture effacerait un désaccord au lieu de le régler.
+
+À la clôture, **le bien redevient disponible**. Jusqu'ici une offre passait en
+`louee` à la sélection du candidat et n'en sortait jamais : le bailleur ne
+pouvait même pas la rebasculer à la main, l'API le lui refusant. Un bien loué
+était donc perdu pour le marché.
+
+**Durée de préavis** : 30 jours par défaut, `preavis_jours` la remplace à chaque
+congé. Cette valeur est un repère, pas une règle de droit — la durée applicable
+relève du bail et du droit congolais, que ce code ne tranche pas.
 
 ## Carnet de loyer : validation par les deux parties
 

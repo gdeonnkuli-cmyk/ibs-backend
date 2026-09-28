@@ -378,6 +378,57 @@ async function migrate() {
   `);
   console.log("✅ Validation des paiements prête.");
 
+  // ── Migration : fin de bail ──
+  // Un bail pouvait être créé, signé et renouvelé, mais jamais terminé. La
+  // garantie, pourtant stockée au contrat, n'avait aucune trace de
+  // restitution — or c'est le premier objet de litige entre bailleur et
+  // locataire à Kinshasa.
+  await pool.query(`
+    ALTER TABLE contrats ADD COLUMN IF NOT EXISTS preavis_par INTEGER REFERENCES users(id);
+    ALTER TABLE contrats ADD COLUMN IF NOT EXISTS preavis_at TIMESTAMPTZ;
+    ALTER TABLE contrats ADD COLUMN IF NOT EXISTS preavis_motif TEXT;
+    ALTER TABLE contrats ADD COLUMN IF NOT EXISTS fin_effective DATE;
+    ALTER TABLE contrats ADD COLUMN IF NOT EXISTS cloture_at TIMESTAMPTZ;
+    ALTER TABLE contrats DROP CONSTRAINT IF EXISTS contrats_statut_check;
+    ALTER TABLE contrats ADD CONSTRAINT contrats_statut_check
+      CHECK (statut IN ('brouillon','en_confirmation','en_signature','signe','annule','preavis','termine'));
+
+    -- État des lieux : une entrée, une sortie, chacune constatée par une
+    -- partie puis acceptée ou contestée par l'autre.
+    CREATE TABLE IF NOT EXISTS etats_lieux (
+      id SERIAL PRIMARY KEY,
+      contrat_id INTEGER NOT NULL REFERENCES contrats(id),
+      type TEXT NOT NULL CHECK(type IN ('entree','sortie')),
+      observations TEXT,
+      photos TEXT[] NOT NULL DEFAULT '{}',
+      fait_par INTEGER NOT NULL REFERENCES users(id),
+      statut TEXT NOT NULL DEFAULT 'en_attente' CHECK(statut IN ('en_attente','accepte','conteste')),
+      valide_par INTEGER REFERENCES users(id),
+      valide_at TIMESTAMPTZ,
+      motif_contestation TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (contrat_id, type)
+    );
+
+    -- Restitution de la garantie : le bailleur annonce ce qu'il rend et ce
+    -- qu'il retient, le locataire accepte ou conteste. IBS conserve la trace.
+    CREATE TABLE IF NOT EXISTS garanties (
+      id SERIAL PRIMARY KEY,
+      contrat_id INTEGER NOT NULL REFERENCES contrats(id) UNIQUE,
+      montant_initial REAL NOT NULL,
+      montant_restitue REAL,
+      motif_retenue TEXT,
+      statut TEXT NOT NULL DEFAULT 'due' CHECK(statut IN ('due','proposee','acceptee','contestee')),
+      declare_par INTEGER REFERENCES users(id),
+      declare_at TIMESTAMPTZ,
+      valide_par INTEGER REFERENCES users(id),
+      valide_at TIMESTAMPTZ,
+      motif_contestation TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+  console.log("✅ Fin de bail prête.");
+
   // ── Index ──────────────────────────────────────────────────────────────
   // Créés en dernier : certains portent sur des colonnes ajoutées par les
   // migrations ci-dessus. PostgreSQL indexe déjà les clés primaires et les
@@ -404,6 +455,8 @@ async function migrate() {
     CREATE INDEX IF NOT EXISTS idx_contrats_locataire ON contrats(locataire_id);
     CREATE INDEX IF NOT EXISTS idx_contrats_offre ON contrats(offre_id);
     CREATE INDEX IF NOT EXISTS idx_contrats_statut ON contrats(statut);
+    CREATE INDEX IF NOT EXISTS idx_etats_lieux_contrat ON etats_lieux(contrat_id);
+    CREATE INDEX IF NOT EXISTS idx_garanties_statut ON garanties(statut);
 
     CREATE INDEX IF NOT EXISTS idx_paiements_contrat ON paiements_loyer(contrat_id);
     CREATE INDEX IF NOT EXISTS idx_paiements_statut ON paiements_loyer(statut);
