@@ -13,10 +13,37 @@
 //   · RAPPELS_AUTO=false coupe le planificateur, et le mode test ne l'arme pas.
 const { query } = require("./db");
 const { notify } = require("./notify");
-const { JOURS_ALERTE_FIN } = require("./regles");
+const { JOURS_ALERTE_FIN, PREAVIS_JOURS_DEFAUT } = require("./regles");
 
 const DELAI_RELANCE_JOURS = 7;   // au plus un rappel par semaine et par contrat
 const INTERVALLE_MS = 12 * 60 * 60 * 1000;
+
+// ── Cadence des rappels de fin de bail ───────────────────────────────────
+// La fenêtre d'alerte suit le préavis : à 90 jours de préavis, elle s'ouvre
+// 100 jours avant l'échéance. Relancer toutes les semaines sur une telle durée
+// revient à envoyer une quinzaine de SMS par bail, dont la moitié à un moment
+// où il reste plus de deux mois pour agir — du bruit, et une facture.
+//
+// Loin de l'échéance, une relance toutes les deux semaines suffit à entretenir
+// l'information. C'est à l'approche de la date limite qu'elle doit redevenir
+// hebdomadaire, quand l'oubli commence à coûter cher.
+// Trois régimes, selon ce que le destinataire peut encore faire :
+//
+//   · tant que le congé reste possible (il reste plus que la durée de préavis),
+//     c'est la période décisive — passée cette date, le bail est reconduit et
+//     le locataire a perdu son droit pour ce terme. Rappel hebdomadaire ;
+//   · entre les deux, il n'y a plus de décision à prendre, seulement à ne pas
+//     oublier l'échéance. Une relance par quinzaine suffit ;
+//   · dans le dernier mois, la sortie se prépare — état des lieux, garantie,
+//     déménagement. Retour à l'hebdomadaire.
+const JOURS_URGENCE = 30;
+const RELANCE_LOINTAINE_JOURS = 14;
+
+const delaiRelance = (joursRestants) => {
+  if (joursRestants > PREAVIS_JOURS_DEFAUT) return DELAI_RELANCE_JOURS;
+  if (joursRestants > JOURS_URGENCE) return RELANCE_LOINTAINE_JOURS;
+  return DELAI_RELANCE_JOURS;
+};
 
 /**
  * Pose le jalon de manière atomique. Rend true seulement si c'est cet appel qui
@@ -26,13 +53,17 @@ const INTERVALLE_MS = 12 * 60 * 60 * 1000;
  * ce qui partirait sans rien écrire, et le throttle reste intact pour le vrai
  * tour qui suivra.
  */
-async function reserverRappel(contratId, colonne, simulation) {
-  const condition = `(${colonne} IS NULL OR ${colonne} < NOW() - INTERVAL '${DELAI_RELANCE_JOURS} days')`;
+async function reserverRappel(contratId, colonne, simulation, delaiJours = DELAI_RELANCE_JOURS) {
+  // Le délai est passé en paramètre plutôt qu'interpolé : il vient du code et
+  // non d'un appelant, mais une durée qui se calcule n'a rien à faire dans le
+  // texte d'une requête.
+  const condition = `(${colonne} IS NULL OR ${colonne} < NOW() - ($2 || ' days')::interval)`;
+  const args = [contratId, String(delaiJours)];
   const r = simulation
-    ? await query(`SELECT id FROM contrats WHERE id = $1 AND ${condition}`, [contratId])
+    ? await query(`SELECT id FROM contrats WHERE id = $1 AND ${condition}`, args)
     : await query(
         `UPDATE contrats SET ${colonne} = NOW() WHERE id = $1 AND ${condition} RETURNING id`,
-        [contratId]
+        args
       );
   return r.rows.length > 0;
 }
@@ -80,7 +111,7 @@ async function rappelsFinDeBail({ simulation = false, journal = [] } = {}) {
     const fin = dateFinDeBail(c);
     const joursRestants = Math.ceil((fin - new Date()) / (1000 * 60 * 60 * 24));
     if (joursRestants < 0 || joursRestants > JOURS_ALERTE_FIN) continue;
-    if (!(await reserverRappel(c.id, "dernier_rappel_echeance", simulation))) continue;
+    if (!(await reserverRappel(c.id, "dernier_rappel_echeance", simulation, delaiRelance(joursRestants)))) continue;
 
     const dateFin = fin.toISOString().slice(0, 10);
     await envoyer(journal, bailleur(c), `IBS : le bail "${c.titre}" se termine dans ${joursRestants} jour(s), le ${dateFin}. Pensez au renouvellement ou au préavis.`, simulation);
