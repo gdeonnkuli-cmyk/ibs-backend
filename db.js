@@ -514,6 +514,34 @@ async function migrate() {
   await pool.query(`ALTER TABLE demandes ADD COLUMN IF NOT EXISTS dossier JSONB;`);
   console.log("✅ Dossier de candidature prêt.");
 
+  // ── Migration : vérification d'identité à chaque changement de coordonnées ──
+  // Un compte vérifié gardait son badge quel que soit ce qu'on y changeait
+  // ensuite : nom, téléphone, commune. Or c'est précisément là que l'identité
+  // se détourne — un compte au bon historique repointé vers quelqu'un d'autre.
+  await pool.query(`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS portrait_url TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS est_professionnel BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS rccm_document_url TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS id_national TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS id_national_document_url TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS coordonnees_maj_at TIMESTAMPTZ;
+  `);
+
+  // L'administrateur qui revérifie doit savoir ce qui a changé. Sans cette
+  // trace, il revoit une pièce d'identité sans pouvoir la comparer à rien.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS changements_identite (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      champs JSONB NOT NULL,
+      statut TEXT NOT NULL DEFAULT 'en_attente' CHECK (statut IN ('en_attente','verifie','rejete')),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      revu_par INTEGER REFERENCES users(id),
+      revu_at TIMESTAMPTZ
+    );
+  `);
+  console.log("✅ Revérification d'identité prête.");
+
   // ── Index ──────────────────────────────────────────────────────────────
   // Créés en dernier : certains portent sur des colonnes ajoutées par les
   // migrations ci-dessus. PostgreSQL indexe déjà les clés primaires et les
@@ -561,6 +589,7 @@ async function migrate() {
     CREATE INDEX IF NOT EXISTS idx_premium_bailleur ON abonnements_premium(bailleur_id);
     CREATE INDEX IF NOT EXISTS idx_encaissements_contrat ON encaissements(contrat_id, mois);
     CREATE INDEX IF NOT EXISTS idx_encaissements_statut ON encaissements(statut, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_changements_identite ON changements_identite(user_id, created_at DESC);
   `);
   console.log("✅ Index prêts.");
 

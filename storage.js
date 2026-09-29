@@ -48,7 +48,10 @@ function signerUpload(dossier) {
     timestamp,
     folder: conf.prefixe,
     signature,
-    upload_url: `https://api.cloudinary.com/v1_1/${CLOUD_NAME}/auto/upload`,
+    // Rendue configurable pour que le chemin de téléversement soit exécutable
+    // contre un service factice : jusqu'ici il ne l'était qu'en production.
+    upload_url: process.env.CLOUDINARY_UPLOAD_URL
+      || `https://api.cloudinary.com/v1_1/${CLOUD_NAME}/auto/upload`,
   };
 }
 

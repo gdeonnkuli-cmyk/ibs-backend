@@ -202,10 +202,153 @@ router.get("/me", requireAuth, async (req, res) => {
 });
 
 // ── Admin : vérification des CNI en attente ──────────
+// ── Mettre à jour ses coordonnées ────────────────────────────────────────
+//
+// Changer son nom, son numéro ou sa commune, c'est changer ce sur quoi repose
+// la vérification d'identité. Un compte gardait pourtant son badge « vérifié »
+// quoi qu'on y modifie ensuite : un compte au bon historique pouvait être
+// repointé vers quelqu'un d'autre sans que rien ne le signale.
+//
+// La revérification est donc exigée à chaque changement : pièce d'identité,
+// portrait, et pour les professionnels les documents de la structure. Le badge
+// retombe en attente jusqu'à ce que l'équipe IBS ait revu le tout.
+//
+// L'administrateur en est dispensé : c'est lui qui vérifie, il ne peut pas
+// s'auto-débloquer, et sa vérification n'a pas le même objet.
+const CHAMPS_IDENTITE = ["nom", "telephone", "commune"];
+
+function estProfessionnel(u) {
+  return u.role === "intermediaire" || u.est_professionnel === true;
+}
+
+router.patch("/me/coordonnees", requireAuth, async (req, res) => {
+  try {
+    const ur = await query(`SELECT * FROM users WHERE id = $1`, [req.user.id]);
+    const moi = ur.rows[0];
+    if (!moi) return res.status(404).json({ error: "Compte introuvable." });
+
+    const {
+      nom, telephone, commune,
+      cni_recto_url, cni_verso_url, portrait_url,
+      nom_agence, agrement_ou_rccm, rccm_document_url,
+      id_national, id_national_document_url,
+      est_professionnel,
+    } = req.body;
+
+    // Ce qui change réellement. Renvoyer les mêmes valeurs ne doit rien exiger
+    // ni faire retomber le badge : l'écran renvoie le formulaire entier.
+    const vise = { nom, telephone, commune };
+    const changes = CHAMPS_IDENTITE.filter(
+      (c) => vise[c] !== undefined && String(vise[c] || "").trim() !== String(moi[c] || "")
+    );
+    const devientPro = est_professionnel === true && !moi.est_professionnel;
+    if (!changes.length && !devientPro) {
+      return res.status(400).json({ error: "Aucun changement à enregistrer." });
+    }
+
+    for (const c of changes) {
+      if (!String(vise[c] || "").trim()) return res.status(400).json({ error: `Le champ « ${c} » ne peut pas être vide.` });
+    }
+    if (changes.includes("telephone")) {
+      const autre = await query(`SELECT id FROM users WHERE telephone = $1 AND id <> $2`, [telephone.trim(), moi.id]);
+      if (autre.rows.length) return res.status(409).json({ error: "Ce numéro de téléphone est déjà utilisé." });
+    }
+
+    // L'administrateur change ses coordonnées sans revérification.
+    const dispense = moi.role === "admin";
+
+    if (!dispense) {
+      const manquantes = [];
+      if (!cni_recto_url) manquantes.push("le recto de votre pièce d'identité");
+      if (!cni_verso_url) manquantes.push("le verso de votre pièce d'identité");
+      if (!portrait_url) manquantes.push("votre photo portrait");
+      if (estProfessionnel({ ...moi, est_professionnel: est_professionnel ?? moi.est_professionnel })) {
+        if (!String(nom_agence || moi.nom_agence || "").trim()) manquantes.push("le nom de votre structure");
+        if (!String(agrement_ou_rccm || moi.agrement_ou_rccm || "").trim()) manquantes.push("votre numéro RCCM ou d'agrément");
+        if (!rccm_document_url && !moi.rccm_document_url) manquantes.push("le document RCCM ou d'agrément");
+        if (!id_national && !moi.id_national) manquantes.push("votre identification nationale");
+      }
+      if (manquantes.length) {
+        return res.status(400).json({
+          error: `Pour modifier vos coordonnées, IBS doit revérifier votre identité. Il manque : ${manquantes.join(", ")}.`,
+          manquantes,
+        });
+      }
+      for (const u of [cni_recto_url, cni_verso_url, portrait_url, rccm_document_url, id_national_document_url]) {
+        if (u && !urlDeStockageValide(u)) return res.status(400).json({ error: MESSAGE_URL_INVALIDE });
+      }
+    }
+
+    // Le numéro n'est plus vérifié dès qu'il change : le code de confirmation
+    // doit repartir sur le nouveau, sinon il suffirait de le réécrire.
+    const telChange = changes.includes("telephone");
+
+    await query(
+      `UPDATE users SET
+         nom = coalesce($2, nom), telephone = coalesce($3, telephone), commune = coalesce($4, commune),
+         cni_recto_url = coalesce($5, cni_recto_url), cni_verso_url = coalesce($6, cni_verso_url),
+         portrait_url = coalesce($7, portrait_url),
+         nom_agence = coalesce($8, nom_agence), agrement_ou_rccm = coalesce($9, agrement_ou_rccm),
+         rccm_document_url = coalesce($10, rccm_document_url),
+         id_national = coalesce($11, id_national), id_national_document_url = coalesce($12, id_national_document_url),
+         est_professionnel = coalesce($13, est_professionnel),
+         cni_statut = CASE WHEN $14 THEN cni_statut ELSE 'en_attente' END,
+         telephone_verifie = CASE WHEN $15 THEN FALSE ELSE telephone_verifie END,
+         coordonnees_maj_at = NOW()
+       WHERE id = $1`,
+      [moi.id,
+       nom ? nom.trim() : null, telephone ? telephone.trim() : null, commune ? commune.trim() : null,
+       cni_recto_url || null, cni_verso_url || null, portrait_url || null,
+       nom_agence || null, agrement_ou_rccm || null, rccm_document_url || null,
+       id_national || null, id_national_document_url || null,
+       est_professionnel === undefined ? null : !!est_professionnel,
+       dispense, telChange]
+    );
+
+    if (!dispense) {
+      // Ce que l'administrateur devra comparer : l'ancienne valeur et la neuve.
+      await query(
+        `INSERT INTO changements_identite (user_id, champs) VALUES ($1, $2::jsonb)`,
+        [moi.id, JSON.stringify(Object.fromEntries(
+          changes.map((c) => [c, { avant: moi[c] || null, apres: String(vise[c]).trim() }])
+        ))]
+      );
+    }
+    await auditLog(moi.id, "coordonnees_modifiees", { champs: changes, revrification: !dispense });
+
+    if (telChange) await generateOtp(telephone.trim(), "connexion");
+
+    const r = await query(`SELECT * FROM users WHERE id = $1`, [moi.id]);
+    const { password_hash, ...sain } = r.rows[0];
+    res.json({
+      message: dispense
+        ? "Coordonnées mises à jour."
+        : "Coordonnées mises à jour. Votre identité sera revérifiée par l'équipe IBS avant que vous puissiez "
+          + (isBailleurLike(moi.role) ? "publier une offre" : "candidater") + " de nouveau.",
+      reverification: !dispense,
+      telephone_a_confirmer: telChange,
+      user: sain,
+    });
+  } catch (e) { console.error(e); res.status(500).json({ error: "Erreur serveur." }); }
+});
+
+const isBailleurLike = (role) => role === "bailleur" || role === "intermediaire";
+
 router.get("/admin/cni-pending", requireAuth, requireRole("admin"), async (req, res) => {
   try {
     const r = await query(
-      `SELECT id, nom, telephone, role, cni_recto_url, cni_verso_url, created_at FROM users WHERE cni_statut = 'en_attente'`
+      `SELECT u.id, u.nom, u.telephone, u.role, u.commune, u.cni_recto_url, u.cni_verso_url,
+              u.portrait_url, u.est_professionnel, u.nom_agence, u.agrement_ou_rccm,
+              u.rccm_document_url, u.id_national, u.id_national_document_url,
+              u.created_at, u.coordonnees_maj_at,
+              -- Ce qui a changé depuis la dernière vérification : sans cela,
+              -- l'administrateur revoit une pièce sans savoir ce qu'elle doit
+              -- confirmer, et une première inscription se confond avec une
+              -- modification de coordonnées.
+              (SELECT ci.champs FROM changements_identite ci
+                WHERE ci.user_id = u.id AND ci.statut = 'en_attente'
+                ORDER BY ci.created_at DESC LIMIT 1) AS changement
+       FROM users u WHERE u.cni_statut = 'en_attente' ORDER BY u.coordonnees_maj_at DESC NULLS LAST, u.created_at DESC`
     );
     res.json({ users: r.rows });
   } catch (e) { console.error(e); res.status(500).json({ error: "Erreur serveur." }); }
@@ -222,6 +365,13 @@ router.post("/admin/cni-review/:id", requireAuth, requireRole("admin"), async (r
     if (!user) return res.status(404).json({ error: "Utilisateur introuvable." });
 
     await query(`UPDATE users SET cni_statut = $1 WHERE id = $2`, [decision, user.id]);
+    // La demande de revérification suit la décision : sans cela, le changement
+    // resterait « en attente » pour toujours et reviendrait à chaque écran.
+    await query(
+      `UPDATE changements_identite SET statut = $1, revu_par = $2, revu_at = NOW()
+       WHERE user_id = $3 AND statut = 'en_attente'`,
+      [decision, req.user.id, user.id]
+    );
     await auditLog(req.user.id, "cni_review", { target: user.id, decision });
     await notify(
       user.id,
