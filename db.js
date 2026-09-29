@@ -491,6 +491,29 @@ async function migrate() {
   await pool.query(`ALTER TABLE paiements_loyer ADD COLUMN IF NOT EXISTS encaissement_mode TEXT;`);
   console.log("✅ Encaissement Mobile Money prêt.");
 
+  // ── Migration : dossier de candidature du locataire ────────────────────
+  // Une candidature ne portait qu'un message libre. Le bailleur choisissait
+  // sur une phrase, quand un locataire qui a déjà loué sur IBS traîne derrière
+  // lui un carnet de loyer qui vaut mieux que n'importe quelle promesse.
+  await pool.query(`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS employeur TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS type_contrat TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS garant_nom TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS garant_telephone TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS garant_lien TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS dossier_pieces JSONB NOT NULL DEFAULT '[]'::jsonb;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS dossier_maj_at TIMESTAMPTZ;
+    ALTER TABLE users DROP CONSTRAINT IF EXISTS users_type_contrat_check;
+    ALTER TABLE users ADD CONSTRAINT users_type_contrat_check
+      CHECK (type_contrat IS NULL OR type_contrat IN ('cdi','cdd','independant','fonctionnaire','etudiant','autre'));
+  `);
+
+  // Le dossier est recopié sur la candidature au moment où elle part. Lire le
+  // dossier vivant laisserait un locataire réécrire après coup ce sur quoi le
+  // bailleur s'est prononcé — et le bailleur ne saurait plus ce qu'il a jugé.
+  await pool.query(`ALTER TABLE demandes ADD COLUMN IF NOT EXISTS dossier JSONB;`);
+  console.log("✅ Dossier de candidature prêt.");
+
   // ── Index ──────────────────────────────────────────────────────────────
   // Créés en dernier : certains portent sur des colonnes ajoutées par les
   // migrations ci-dessus. PostgreSQL indexe déjà les clés primaires et les

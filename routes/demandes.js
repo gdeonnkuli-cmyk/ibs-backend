@@ -3,6 +3,7 @@ const { query } = require("../db");
 const { requireAuth, requireRole, agenceIdDe } = require("../auth");
 const { notify } = require("../notify");
 const { auditLog } = require("../audit");
+const { vueDossier, historiquePaiement } = require("./dossier");
 
 const router = express.Router();
 
@@ -27,9 +28,18 @@ router.post("/", requireAuth, requireRole("locataire"), async (req, res) => {
     const existing = await query(`SELECT id FROM demandes WHERE offre_id = $1 AND locataire_id = $2`, [offre_id, user.id]);
     if (existing.rows.length) return res.status(409).json({ error: "Vous avez déjà postulé sur cette offre." });
 
+    // Le dossier est recopié tel qu'il est à cet instant. Lire le dossier vivant
+    // au moment où le bailleur consulte laisserait le candidat réécrire après
+    // coup ce sur quoi celui-ci s'est prononcé.
+    const instantane = {
+      ...vueDossier(user),
+      historique: await historiquePaiement(user.id),
+      fige_le: new Date().toISOString(),
+    };
+
     const ins = await query(
-      `INSERT INTO demandes (offre_id, locataire_id, message) VALUES ($1,$2,$3) RETURNING id`,
-      [offre_id, user.id, message || null]
+      `INSERT INTO demandes (offre_id, locataire_id, message, dossier) VALUES ($1,$2,$3,$4::jsonb) RETURNING id`,
+      [offre_id, user.id, message || null, JSON.stringify(instantane)]
     );
 
     await auditLog(user.id, "candidature", { offre_id });
@@ -46,7 +56,7 @@ router.get("/recues", requireAuth, requireRole("bailleur","intermediaire"), asyn
       `SELECT d.id AS demande_id, d.statut, d.message, d.created_at,
               o.id AS offre_id, p.titre,
               u.id AS locataire_id, u.nom AS locataire_nom, u.telephone AS locataire_telephone,
-              u.profession, u.revenu_usd, u.nb_occupants
+              u.profession, u.revenu_usd, u.nb_occupants, d.dossier
        FROM demandes d
        JOIN offres o ON o.id = d.offre_id
        JOIN proprietes p ON p.id = o.propriete_id
