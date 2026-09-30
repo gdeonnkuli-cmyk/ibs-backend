@@ -4,7 +4,7 @@ const { requireAuth, requireRole, agenceIdDe } = require("../auth");
 const { notify } = require("../notify");
 const { auditLog } = require("../audit");
 const { urlDeStockageValide, MESSAGE_URL_INVALIDE } = require("../storage");
-const { PREAVIS_JOURS_DEFAUT } = require("../regles");
+const { PREAVIS_JOURS_DEFAUT, VALIDITE_OFFRE_JOURS } = require("../regles");
 
 const router = express.Router();
 
@@ -312,7 +312,15 @@ router.post("/:id/cloturer", requireAuth, async (req, res) => {
 
     await query(`UPDATE contrats SET statut = 'termine', cloture_at = NOW() WHERE id = $1`, [c.id]);
     // Le bien redevient disponible : sans cela il resterait marqué loué.
-    await query(`UPDATE offres SET statut = 'active' WHERE id = $1 AND statut <> 'active'`, [c.offre_id]);
+    // La validité repart de zéro : une offre qui revient après un bail d'un an
+    // porterait sinon une date d'expiration largement dépassée, et le premier
+    // passage du planificateur la périmerait aussitôt remise en ligne.
+    await query(
+      `UPDATE offres SET statut = 'active', publiee_at = NOW(),
+         expire_le = NOW() + ($2 || ' days')::interval, rappel_expiration_at = NULL
+       WHERE id = $1 AND statut <> 'active'`,
+      [c.offre_id, String(VALIDITE_OFFRE_JOURS)]
+    );
     await auditLog(req.user.id, "bail_cloture", { contrat_id: c.id });
     await notify(autrePartie(req.user, c), "IBS : votre bail est officiellement clos. Merci d'avoir utilisé IBS.", "sms");
 

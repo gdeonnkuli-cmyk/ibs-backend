@@ -13,7 +13,10 @@
 //   · RAPPELS_AUTO=false coupe le planificateur, et le mode test ne l'arme pas.
 const { query } = require("./db");
 const { notify } = require("./notify");
-const { JOURS_ALERTE_FIN, PREAVIS_JOURS_DEFAUT } = require("./regles");
+const {
+  JOURS_ALERTE_FIN, PREAVIS_JOURS_DEFAUT,
+  VALIDITE_OFFRE_JOURS, PREAVIS_EXPIRATION_JOURS,
+} = require("./regles");
 
 const DELAI_RELANCE_JOURS = 7;   // au plus un rappel par semaine et par contrat
 const INTERVALLE_MS = 12 * 60 * 60 * 1000;
@@ -178,6 +181,50 @@ async function rappelsLoyerEnRetard({ simulation = false, journal = [] } = {}) {
   return envoyes;
 }
 
+// ── Offres arrivant à échéance, puis périmées ─────────────────────────────
+// Deux temps, et l'ordre compte : on prévient d'abord ceux dont l'annonce va
+// tomber, on périme ensuite celles dont la date est passée. L'inverse ferait
+// recevoir l'avertissement après la disparition.
+async function offresPerimees({ simulation = false, journal = [] } = {}) {
+  const bientot = await query(
+    `SELECT o.id, o.expire_le, p.titre, u.id AS bailleur_id, u.nom, u.telephone
+     FROM offres o
+     JOIN proprietes p ON p.id = o.propriete_id
+     JOIN users u ON u.id = p.bailleur_id
+     WHERE o.statut = 'active'
+       AND o.expire_le IS NOT NULL
+       AND o.expire_le <= NOW() + ($1 || ' days')::interval
+       AND o.expire_le > NOW()
+       AND o.rappel_expiration_at IS NULL`,
+    [String(PREAVIS_EXPIRATION_JOURS)]
+  );
+
+  for (const o of bientot.rows) {
+    const jours = Math.max(1, Math.ceil((new Date(o.expire_le) - Date.now()) / 86400000));
+    await envoyer(journal, { id: o.bailleur_id, nom: o.nom, telephone: o.telephone },
+      `IBS : votre annonce "${o.titre}" expire dans ${jours} jour(s). Renouvelez-la dans l'application pour la garder en ligne.`,
+      simulation);
+    // Le jalon évite de répéter l'avertissement à chaque passage.
+    if (!simulation) {
+      await query(`UPDATE offres SET rappel_expiration_at = NOW() WHERE id = $1`, [o.id]);
+    }
+  }
+
+  // La péremption ne touche que les offres actives : une offre suspendue ou
+  // louée n'est pas en ligne, la faire expirer n'aurait aucun sens.
+  const perimees = simulation
+    ? await query(`SELECT id FROM offres WHERE statut = 'active' AND expire_le IS NOT NULL AND expire_le <= NOW()`)
+    : await query(
+        `UPDATE offres SET statut = 'expiree'
+         WHERE statut = 'active' AND expire_le IS NOT NULL AND expire_le <= NOW()
+         RETURNING id`);
+
+  if (perimees.rows.length && !simulation) {
+    console.log(`[OFFRES] ${perimees.rows.length} annonce(s) expirée(s) après ${VALIDITE_OFFRE_JOURS} jours.`);
+  }
+  return { avertis: bientot.rows.length, expirees: perimees.rows.length };
+}
+
 /**
  * @param {boolean} simulation — n'envoie rien, ne pose aucun jalon, et rend la
  *   liste exacte des messages qui partiraient. Sert à vérifier l'effet d'un
@@ -188,16 +235,19 @@ async function passerUnTour({ simulation = false } = {}) {
     const journal = [];
     const fins = await rappelsFinDeBail({ simulation, journal });
     const retards = await rappelsLoyerEnRetard({ simulation, journal });
-    if (fins || retards) {
+    const offres = await offresPerimees({ simulation, journal });
+    if (fins || retards || offres.avertis || offres.expirees) {
       const prefixe = simulation ? "[RAPPELS·SIMULATION]" : "[RAPPELS]";
-      console.log(`${prefixe} ${fins} fin(s) de bail, ${retards} retard(s) de loyer${simulation ? " (rien envoyé)" : " signalés"}.`);
+      console.log(`${prefixe} ${fins} fin(s) de bail, ${retards} retard(s) de loyer, `
+        + `${offres.avertis} annonce(s) bientôt expirée(s), ${offres.expirees} expirée(s)`
+        + `${simulation ? " (rien envoyé, rien périmé)" : ""}.`);
     }
-    return { fins, retards, messages: journal, simulation };
+    return { fins, retards, offres, messages: journal, simulation };
   } catch (e) {
     // Un échec ne doit jamais arrêter le planificateur : le tour suivant
     // réessaiera, et le throttle n'a pas été posé pour les envois manqués.
     console.error("[RAPPELS] Tour en échec :", e.message);
-    return { fins: 0, retards: 0, messages: [], erreur: e.message };
+    return { fins: 0, retards: 0, offres: { avertis: 0, expirees: 0 }, messages: [], erreur: e.message };
   }
 }
 
@@ -234,5 +284,6 @@ const reglesRappels = () => ({
 });
 
 module.exports = {
-  demarrerPlanificateur, passerUnTour, rappelsFinDeBail, rappelsLoyerEnRetard, reglesRappels,
+  demarrerPlanificateur, passerUnTour, rappelsFinDeBail, rappelsLoyerEnRetard,
+  offresPerimees, reglesRappels,
 };

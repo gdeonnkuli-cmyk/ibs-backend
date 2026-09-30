@@ -542,6 +542,30 @@ async function migrate() {
   `);
   console.log("✅ Revérification d'identité prête.");
 
+  // ── Migration : cycle de vie des offres ────────────────────────────────
+  // Une offre publiée y restait indéfiniment. Sur un marché où les biens
+  // partent en quelques semaines, un catalogue qui ne périme rien finit par
+  // faire perdre leur temps aux locataires — et par décrédibiliser la
+  // plateforme plus sûrement qu'un catalogue vide.
+  await pool.query(`
+    ALTER TABLE offres DROP CONSTRAINT IF EXISTS offres_statut_check;
+    ALTER TABLE offres ADD CONSTRAINT offres_statut_check
+      CHECK (statut IN ('active','suspendue','louee','expiree','archivee'));
+    ALTER TABLE offres ADD COLUMN IF NOT EXISTS publiee_at TIMESTAMPTZ;
+    ALTER TABLE offres ADD COLUMN IF NOT EXISTS expire_le TIMESTAMPTZ;
+    ALTER TABLE offres ADD COLUMN IF NOT EXISTS rappel_expiration_at TIMESTAMPTZ;
+    ALTER TABLE offres ADD COLUMN IF NOT EXISTS archivee_at TIMESTAMPTZ;
+  `);
+
+  // Les offres déjà en ligne n'ont pas de date de publication : sans ce
+  // rattrapage, elles seraient toutes périmées au premier passage.
+  await pool.query(`
+    UPDATE offres SET publiee_at = created_at WHERE publiee_at IS NULL;
+    UPDATE offres SET expire_le = publiee_at + INTERVAL '60 days'
+      WHERE expire_le IS NULL AND statut = 'active';
+  `);
+  console.log("✅ Cycle de vie des offres prêt.");
+
   // ── Index ──────────────────────────────────────────────────────────────
   // Créés en dernier : certains portent sur des colonnes ajoutées par les
   // migrations ci-dessus. PostgreSQL indexe déjà les clés primaires et les
@@ -590,6 +614,7 @@ async function migrate() {
     CREATE INDEX IF NOT EXISTS idx_encaissements_contrat ON encaissements(contrat_id, mois);
     CREATE INDEX IF NOT EXISTS idx_encaissements_statut ON encaissements(statut, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_changements_identite ON changements_identite(user_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_offres_expiration ON offres(statut, expire_le);
   `);
   console.log("✅ Index prêts.");
 

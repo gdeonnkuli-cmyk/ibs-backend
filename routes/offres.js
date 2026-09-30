@@ -9,6 +9,25 @@ const { notify } = require("../notify");
 
 const router = express.Router();
 
+// ── Cycle de vie d'une offre ─────────────────────────────────────────────
+//
+//   active    en ligne, visible dans la recherche
+//   suspendue retirée par le bailleur, réactivable à tout moment
+//   louee     un bail a été signé ; la clôture du bail la remet en active
+//   expiree   passée sa date de validité sans que le bailleur la renouvelle
+//   archivee  retirée définitivement — le bien n'est plus proposé
+//
+// Une offre publiée restait en ligne indéfiniment. Sur un marché où les biens
+// partent en quelques semaines, un catalogue qui ne périme rien fait perdre
+// leur temps aux locataires et décrédibilise la plateforme plus sûrement qu'un
+// catalogue vide.
+const { VALIDITE_OFFRE_JOURS: VALIDITE_JOURS } = require("../regles");
+
+// Statuts qu'un bailleur peut poser lui-même. 'louee' se pose par la
+// sélection d'un candidat, 'expiree' par le temps : ni l'un ni l'autre ne se
+// décrète.
+const STATUTS_MANUELS = ["active", "suspendue", "archivee"];
+
 /**
  * Les documents d'une offre doivent provenir de notre espace de stockage, au
  * même titre que les CNI : un titre de propriété pointant vers une URL
@@ -78,7 +97,11 @@ router.post("/", requireAuth, requireRole("bailleur","intermediaire"), async (re
        Array.isArray(photos) ? photos.slice(0, 8) : [], mandantIdOk, prixSuspect]
     );
 
-    const o = await query(`INSERT INTO offres (propriete_id) VALUES ($1) RETURNING id`, [p.rows[0].id]);
+    const o = await query(
+      `INSERT INTO offres (propriete_id, publiee_at, expire_le)
+       VALUES ($1, NOW(), NOW() + ($2 || ' days')::interval) RETURNING id`,
+      [p.rows[0].id, String(VALIDITE_JOURS)]
+    );
 
     await auditLog(user.id, "offre_publiee", { offre_id: o.rows[0].id });
 
@@ -162,8 +185,30 @@ router.get("/", async (req, res) => {
       `;
     }
 
-    const r = await query(sql, params);
-    res.json({ count: r.rows.length, offres: r.rows });
+    // Le catalogue était rendu en entier à chaque recherche. Tant qu'il tient
+    // en quelques dizaines d'annonces personne ne le voit ; à quelques
+    // milliers, c'est la requête, le réseau kinois et le téléphone qui cèdent,
+    // dans cet ordre.
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const taille = Math.min(Math.max(1, Number(req.query.taille) || 20), 50);
+
+    // Le total est compté sur les mêmes filtres, avant découpe : sans lui,
+    // l'écran ne peut ni afficher « 3 sur 128 » ni savoir s'il reste une page.
+    const compte = await query(`SELECT count(*)::int AS total FROM (${sql}) c`, params);
+    const total = compte.rows[0].total;
+
+    params.push(taille, (page - 1) * taille);
+    const r = await query(`${sql} LIMIT $${params.length - 1} OFFSET $${params.length}`, params);
+
+    res.json({
+      count: r.rows.length,
+      total,
+      page,
+      taille,
+      pages: Math.max(1, Math.ceil(total / taille)),
+      reste: Math.max(0, total - (page - 1) * taille - r.rows.length),
+      offres: r.rows,
+    });
   } catch (e) { console.error(e); res.status(500).json({ error: "Erreur serveur." }); }
 });
 
@@ -222,11 +267,22 @@ router.get("/:id", async (req, res) => {
 router.get("/mine/liste", requireAuth, requireRole("bailleur","intermediaire"), async (req, res) => {
   try {
     const r = await query(
-      `SELECT o.id AS offre_id, o.statut, o.vues, p.titre, p.commune, p.loyer_usd, p.statut_verification,
-              p.garantie_mois, p.charges_incluses, p.disponibilite, p.prix_suspect, mn.nom AS mandant_nom
+      `SELECT o.id AS offre_id, o.statut, o.vues, o.publiee_at, o.expire_le, o.archivee_at,
+              -- Le bailleur a besoin du nombre de jours, pas d'une date à
+              -- soustraire mentalement. Négatif si la date est déjà passée.
+              -- Arrondi au jour supérieur : EXTRACT(DAY) tronque, et une offre
+              -- publiée pour soixante jours annonçait cinquante-neuf dès la
+              -- seconde suivante.
+              CASE WHEN o.expire_le IS NULL THEN NULL
+                   ELSE CEIL(EXTRACT(EPOCH FROM (o.expire_le - NOW())) / 86400)::int END AS jours_restants,
+              p.titre, p.commune, p.loyer_usd, p.statut_verification,
+              p.garantie_mois, p.charges_incluses, p.disponibilite, p.prix_suspect, mn.nom AS mandant_nom,
+              (SELECT count(*)::int FROM demandes d WHERE d.offre_id = o.id) AS candidatures
        FROM offres o JOIN proprietes p ON p.id = o.propriete_id
        LEFT JOIN mandants mn ON mn.id = p.mandant_id
-       WHERE p.bailleur_id = $1 ORDER BY o.created_at DESC`,
+       WHERE p.bailleur_id = $1
+       -- Les archivées en dernier : elles ne demandent plus rien.
+       ORDER BY (o.statut = 'archivee'), o.created_at DESC`,
       [agenceIdDe(req.user)]
     );
     res.json({ offres: r.rows });
@@ -298,7 +354,9 @@ router.patch("/:id", requireAuth, requireRole("bailleur","intermediaire"), async
 router.post("/:id/statut", requireAuth, requireRole("bailleur","intermediaire"), async (req, res) => {
   try {
     const { statut } = req.body;
-    if (!["active", "suspendue"].includes(statut)) return res.status(400).json({ error: "Statut invalide." });
+    if (!STATUTS_MANUELS.includes(statut)) {
+      return res.status(400).json({ error: `Statut invalide. Attendu : ${STATUTS_MANUELS.join(", ")}.` });
+    }
 
     const check = await query(
       `SELECT o.id, o.statut, p.bailleur_id FROM offres o JOIN proprietes p ON p.id = o.propriete_id WHERE o.id = $1`,
@@ -306,11 +364,72 @@ router.post("/:id/statut", requireAuth, requireRole("bailleur","intermediaire"),
     );
     if (!check.rows.length) return res.status(404).json({ error: "Offre introuvable." });
     if (check.rows[0].bailleur_id !== agenceIdDe(req.user)) return res.status(403).json({ error: "Cette offre ne vous appartient pas." });
-    if (check.rows[0].statut === "louee") return res.status(400).json({ error: "Ce bien est déjà loué — impossible de changer son statut." });
 
-    await query(`UPDATE offres SET statut = $1 WHERE id = $2`, [statut, req.params.id]);
-    await auditLog(req.user.id, "offre_statut", { offre_id: req.params.id, statut });
-    res.json({ message: statut === "active" ? "Offre réactivée." : "Offre suspendue." });
+    const actuel = check.rows[0].statut;
+    if (actuel === "louee") {
+      return res.status(409).json({ error: "Ce bien est loué : son offre redeviendra disponible à la clôture du bail." });
+    }
+    // Une offre archivée ne se ressuscite pas : le bailleur en republie une.
+    // Rouvrir une annonce retirée il y a six mois remettrait en ligne un prix
+    // et une description que plus personne n'a relus.
+    if (actuel === "archivee") {
+      return res.status(409).json({ error: "Cette offre est archivée. Publiez-en une nouvelle pour reproposer ce bien." });
+    }
+
+    // Repasser en ligne vaut republication : la validité repart de zéro, sans
+    // quoi une offre réactivée après deux mois expirerait aussitôt.
+    const reactive = statut === "active";
+    await query(
+      `UPDATE offres SET statut = $1,
+         publiee_at = CASE WHEN $3 THEN NOW() ELSE publiee_at END,
+         expire_le = CASE WHEN $3 THEN NOW() + ($4 || ' days')::interval ELSE expire_le END,
+         rappel_expiration_at = CASE WHEN $3 THEN NULL ELSE rappel_expiration_at END,
+         archivee_at = CASE WHEN $1 = 'archivee' THEN NOW() ELSE archivee_at END
+       WHERE id = $2`,
+      [statut, req.params.id, reactive, String(VALIDITE_JOURS)]
+    );
+    await auditLog(req.user.id, "offre_statut", { offre_id: req.params.id, statut, depuis: actuel });
+
+    res.json({
+      message: { active: "Offre remise en ligne pour " + VALIDITE_JOURS + " jours.",
+                 suspendue: "Offre retirée de la recherche. Vous pouvez la remettre en ligne à tout moment.",
+                 archivee: "Offre archivée." }[statut],
+      statut,
+    });
+  } catch (e) { console.error(e); res.status(500).json({ error: "Erreur serveur." }); }
+});
+
+// ── Renouveler une offre ─────────────────────────────────────────────────
+// Le geste attendu quand une annonce arrive à échéance : le bailleur confirme
+// qu'elle est toujours d'actualité, et elle repart pour une période. C'est ce
+// qui fait la valeur de la péremption — sans renouvellement, elle ne serait
+// qu'une perte d'annonces.
+router.post("/:id/renouveler", requireAuth, requireRole("bailleur", "intermediaire"), async (req, res) => {
+  try {
+    const check = await query(
+      `SELECT o.id, o.statut, p.bailleur_id, p.titre FROM offres o
+       JOIN proprietes p ON p.id = o.propriete_id WHERE o.id = $1`,
+      [req.params.id]
+    );
+    if (!check.rows.length) return res.status(404).json({ error: "Offre introuvable." });
+    const o = check.rows[0];
+    if (o.bailleur_id !== agenceIdDe(req.user)) return res.status(403).json({ error: "Cette offre ne vous appartient pas." });
+    if (!["active", "expiree", "suspendue"].includes(o.statut)) {
+      return res.status(409).json({
+        error: o.statut === "louee"
+          ? "Ce bien est loué : son offre redeviendra disponible à la clôture du bail."
+          : "Cette offre est archivée. Publiez-en une nouvelle pour reproposer ce bien.",
+      });
+    }
+
+    await query(
+      `UPDATE offres SET statut = 'active', publiee_at = NOW(),
+         expire_le = NOW() + ($2 || ' days')::interval, rappel_expiration_at = NULL
+       WHERE id = $1`,
+      [o.id, String(VALIDITE_JOURS)]
+    );
+    await auditLog(req.user.id, "offre_renouvelee", { offre_id: o.id, depuis: o.statut });
+    res.json({ message: `Offre renouvelée pour ${VALIDITE_JOURS} jours.`, statut: "active" });
   } catch (e) { console.error(e); res.status(500).json({ error: "Erreur serveur." }); }
 });
 

@@ -26,4 +26,24 @@ if (JOURS_ALERTE_FIN <= PREAVIS_JOURS_DEFAUT) {
   );
 }
 
-module.exports = { PREAVIS_JOURS_DEFAUT, JOURS_ALERTE_FIN };
+// ── Durée de vie d'une annonce ───────────────────────────────────────────
+// Une offre publiée restait en ligne indéfiniment. Sur un marché où les biens
+// partent en quelques semaines, un catalogue qui ne périme rien fait perdre
+// leur temps aux locataires.
+const VALIDITE_OFFRE_JOURS = 60;
+
+// Le bailleur est prévenu avant, pas au moment où son annonce disparaît.
+const PREAVIS_EXPIRATION_JOURS = 7;
+
+if (PREAVIS_EXPIRATION_JOURS >= VALIDITE_OFFRE_JOURS) {
+  throw new Error(
+    `regles.js : le préavis d'expiration (${PREAVIS_EXPIRATION_JOURS} j) doit être `
+    + `plus court que la validité d'une offre (${VALIDITE_OFFRE_JOURS} j), sinon `
+    + `chaque annonce naîtrait déjà en préavis.`
+  );
+}
+
+module.exports = {
+  PREAVIS_JOURS_DEFAUT, JOURS_ALERTE_FIN,
+  VALIDITE_OFFRE_JOURS, PREAVIS_EXPIRATION_JOURS,
+};
