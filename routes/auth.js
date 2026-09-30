@@ -20,6 +20,25 @@ function trop(res) {
   return res.status(429).json({ error: MESSAGE_LIMITE });
 }
 
+// ── Exigence de mot de passe ─────────────────────────────────────────────
+// Huit caractères au minimum. Elle ne s'applique qu'au moment où un mot de
+// passe est *choisi* — inscription, réinitialisation — jamais à la connexion :
+// les comptes créés avant continuent de fonctionner avec le leur, comme
+// demandé. Le durcir à la connexion enfermerait dehors des gens dont le seul
+// tort est de s'être inscrits plus tôt.
+//
+// Jusqu'ici l'inscription ne vérifiait rien du tout : elle exigeait seulement
+// qu'un mot de passe soit présent, fût-il d'un caractère. Le minimum de six
+// n'existait que sur la réinitialisation.
+const MOT_DE_PASSE_MIN = 8;
+
+function motDePasseInsuffisant(mdp) {
+  if (typeof mdp !== "string" || mdp.length < MOT_DE_PASSE_MIN) {
+    return `Le mot de passe doit faire au moins ${MOT_DE_PASSE_MIN} caractères.`;
+  }
+  return null;
+}
+
 // ── Inscription ──────────────────────────────────────
 router.post("/register", async (req, res) => {
   try {
@@ -31,6 +50,8 @@ router.post("/register", async (req, res) => {
     if (!nom || !telephone || !password) {
       return res.status(400).json({ error: "Nom, téléphone et mot de passe sont requis." });
     }
+    const faible = motDePasseInsuffisant(password);
+    if (faible) return res.status(400).json({ error: faible });
     if (!cni_recto_url || !cni_verso_url) {
       return res.status(400).json({ error: "La CNI (recto et verso) est obligatoire pour s'inscrire sur IBS." });
     }
@@ -158,9 +179,8 @@ router.post("/reset-password", async (req, res) => {
     if (!telephone || !code || !nouveau_password) {
       return res.status(400).json({ error: "Téléphone, code et nouveau mot de passe sont requis." });
     }
-    if (nouveau_password.length < 6) {
-      return res.status(400).json({ error: "Le mot de passe doit faire au moins 6 caractères." });
-    }
+    const tropCourt = motDePasseInsuffisant(nouveau_password);
+    if (tropCourt) return res.status(400).json({ error: tropCourt });
     if (limiteCodeErrone.depasse(telephone)) return trop(res);
 
     const result = await verifyOtp(telephone, code, "reinitialisation");
