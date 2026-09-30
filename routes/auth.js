@@ -42,7 +42,8 @@ function motDePasseInsuffisant(mdp) {
 // ── Inscription ──────────────────────────────────────
 router.post("/register", async (req, res) => {
   try {
-    const { role, nom, telephone, password, commune, cni_recto_url, cni_verso_url, agrement_ou_rccm, nom_agence } = req.body;
+    const { role, nom, telephone, password, commune, cni_recto_url, cni_verso_url,
+            portrait_url, agrement_ou_rccm, nom_agence } = req.body;
 
     if (!role || !["bailleur", "locataire", "intermediaire"].includes(role)) {
       return res.status(400).json({ error: "Rôle invalide (bailleur, locataire ou intermédiaire/agence)." });
@@ -55,7 +56,15 @@ router.post("/register", async (req, res) => {
     if (!cni_recto_url || !cni_verso_url) {
       return res.status(400).json({ error: "La CNI (recto et verso) est obligatoire pour s'inscrire sur IBS." });
     }
-    if (!urlDeStockageValide(cni_recto_url) || !urlDeStockageValide(cni_verso_url)) {
+    // Deux faces d'une carte ne disent pas qu'elle appartient à celui qui
+    // l'envoie. Le portrait était déjà exigé au changement de coordonnées : ne
+    // pas le demander dès l'inscription laissait entrer sans lui, et
+    // l'exigence ne mordait qu'à la première modification.
+    if (!portrait_url) {
+      return res.status(400).json({ error: "Une photo portrait est obligatoire pour s'inscrire sur IBS." });
+    }
+    if (!urlDeStockageValide(cni_recto_url) || !urlDeStockageValide(cni_verso_url)
+        || !urlDeStockageValide(portrait_url)) {
       return res.status(400).json({ error: MESSAGE_URL_INVALIDE });
     }
     if (role === "intermediaire" && !agrement_ou_rccm) {
@@ -69,9 +78,10 @@ router.post("/register", async (req, res) => {
 
     const password_hash = bcrypt.hashSync(password, 10);
     const inserted = await query(
-      `INSERT INTO users (role, nom, telephone, password_hash, commune, cni_recto_url, cni_verso_url, agrement_ou_rccm, nom_agence)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
-      [role, nom, telephone, password_hash, commune || null, cni_recto_url, cni_verso_url,
+      `INSERT INTO users (role, nom, telephone, password_hash, commune, cni_recto_url, cni_verso_url,
+                          portrait_url, agrement_ou_rccm, nom_agence)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
+      [role, nom, telephone, password_hash, commune || null, cni_recto_url, cni_verso_url, portrait_url,
        role === "intermediaire" ? agrement_ou_rccm : null, role === "intermediaire" ? (nom_agence || null) : null]
     );
     const userId = inserted.rows[0].id;
