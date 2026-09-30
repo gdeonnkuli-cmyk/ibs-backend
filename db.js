@@ -558,12 +558,16 @@ async function migrate() {
   `);
 
   // Les offres déjà en ligne n'ont pas de date de publication : sans ce
-  // rattrapage, elles seraient toutes périmées au premier passage.
-  await pool.query(`
-    UPDATE offres SET publiee_at = created_at WHERE publiee_at IS NULL;
-    UPDATE offres SET expire_le = publiee_at + INTERVAL '60 days'
-      WHERE expire_le IS NULL AND statut = 'active';
-  `);
+  // rattrapage, elles seraient toutes périmées au premier passage. La durée est
+  // lue dans regles.js — la recopier ici l'aurait laissée dériver au premier
+  // changement, et c'est exactement ce qui s'est produit ailleurs.
+  const { VALIDITE_OFFRE_JOURS } = require("./regles");
+  await pool.query(`UPDATE offres SET publiee_at = created_at WHERE publiee_at IS NULL`);
+  await pool.query(
+    `UPDATE offres SET expire_le = publiee_at + ($1 || ' days')::interval
+     WHERE expire_le IS NULL AND statut = 'active'`,
+    [String(VALIDITE_OFFRE_JOURS)]
+  );
   console.log("✅ Cycle de vie des offres prêt.");
 
   // ── Index ──────────────────────────────────────────────────────────────

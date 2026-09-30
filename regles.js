@@ -30,7 +30,7 @@ if (JOURS_ALERTE_FIN <= PREAVIS_JOURS_DEFAUT) {
 // Une offre publiée restait en ligne indéfiniment. Sur un marché où les biens
 // partent en quelques semaines, un catalogue qui ne périme rien fait perdre
 // leur temps aux locataires.
-const VALIDITE_OFFRE_JOURS = 60;
+const VALIDITE_OFFRE_JOURS = 45;
 
 // Le bailleur est prévenu avant, pas au moment où son annonce disparaît.
 const PREAVIS_EXPIRATION_JOURS = 7;
